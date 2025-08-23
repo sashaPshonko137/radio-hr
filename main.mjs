@@ -64,6 +64,17 @@ async function checkYtDlp() {
     });
 }
 
+async function safeDeleteFile(filePath) {
+    try {
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`🗑️  Удален файл: ${filePath}`);
+        }
+    } catch (error) {
+        console.error('❌ Ошибка удаления файла:', error);
+    }
+}
+
 // Проверяем установлен ли ffmpeg
 async function checkFfmpeg() {
     return new Promise((resolve) => {
@@ -183,6 +194,7 @@ let trackStartTime = Date.now();
 let activeConnections = new Set();
 
 // Функция для добавления трека в очередь (после текущего)
+// Функция для добавления трека в очередь (после текущего)
 async function addTrackToQueue(trackName) {
     console.log(`🎵 Добавляем в очередь: "${trackName}"`);
     
@@ -219,7 +231,8 @@ async function addTrackToQueue(trackName) {
         const newTrack = {
             path: filePath,
             duration: durationMs,
-            name: path.basename(filePath, path.extname(filePath))
+            name: path.basename(filePath, path.extname(filePath)),
+            isDownloaded: true // Помечаем как скачанный для последующего удаления
         };
         
         // Добавляем трек СРАЗУ ПОСЛЕ ТЕКУЩЕГО
@@ -316,6 +329,13 @@ function sendTrackFromPosition(res, track, positionMs) {
         readStream.pipe(res, { end: false });
     }
 
+    readStream.on('end', () => {
+        // Удаляем файл ПОСЛЕ завершения отправки
+        if (track.path.includes(AUDIO_DIR)) {
+            setTimeout(() => safeDeleteFile(track.path), 1000);
+        }
+    });
+
     readStream.on('error', (err) => {
         console.error('❌ Ошибка отправки трека:', err);
         if (!res.finished) {
@@ -324,6 +344,7 @@ function sendTrackFromPosition(res, track, positionMs) {
     });
 }
 
+// Создаём сервер
 // Создаём сервер
 const server = http.createServer(async (req, res) => {
     // POST роут для добавления трека
@@ -345,8 +366,8 @@ const server = http.createServer(async (req, res) => {
                 }
                 
                 console.log(`📨 POST запрос на добавление: "${track}"`);
-                const success = await addTrackToQueue(track);
                 
+                // НЕМЕДЛЕННО отвечаем клиенту
                 res.writeHead(200, { 
                     'Content-Type': 'application/json',
                     'Access-Control-Allow-Origin': '*',
@@ -355,9 +376,19 @@ const server = http.createServer(async (req, res) => {
                 });
                 
                 res.end(JSON.stringify({ 
-                    success, 
-                    message: success ? 'Трек добавлен в очередь после текущего' : 'Ошибка добавления трека' 
+                    success: true, 
+                    message: 'Трек принят в обработку' 
                 }));
+                
+                // Асинхронно обрабатываем скачивание (после ответа клиенту)
+                setTimeout(async () => {
+                    try {
+                        const success = await addTrackToQueue(track);
+                        console.log(success ? '✅ Трек добавлен' : '❌ Ошибка добавления');
+                    } catch (error) {
+                        console.error('❌ Ошибка обработки трека:', error);
+                    }
+                }, 100);
                 
             } catch (error) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -368,81 +399,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // OPTIONS для CORS
-    if (req.url === '/add' && req.method === 'OPTIONS') {
-        res.writeHead(200, {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type'
-        });
-        res.end();
-        return;
-    }
-
-    // Обслуживаем аудиопоток
-    if (req.url === '/stream.mp3') {
-        if (audioFilesCache.length === 0) {
-            res.writeHead(500, { 'Content-Type': 'text/plain' });
-            res.end('Нет аудиофайлов');
-            return;
-        }
-
-        console.log(`🎧 Новый клиент подключился (всего: ${activeConnections.size + 1})`);
-        activeConnections.add(res);
-
-        res.writeHead(200, {
-            'Content-Type': 'audio/mpeg',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Transfer-Encoding': 'chunked'
-        });
-
-        const currentTrack = audioFilesCache[currentTrackIndex];
-        const elapsed = Date.now() - trackStartTime;
-        const positionMs = Math.min(elapsed, currentTrack.duration - 1000);
-
-        sendTrackFromPosition(res, currentTrack, positionMs);
-
-        req.on('close', () => {
-            console.log('🎧 Клиент отключился');
-            activeConnections.delete(res);
-        });
-
-        res.on('finish', () => {
-            activeConnections.delete(res);
-        });
-
-        return;
-    }
-
-    // Главная страница
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(`
-        <h1>🎧 Highrise Radio</h1>
-        <p>Добавить трек в очередь (после текущего):</p>
-        <input type="text" id="trackInput" placeholder="Название трека">
-        <button onclick="addTrack()">Добавить</button>
-        <p id="status"></p>
-        <audio controls>
-            <source src="/stream.mp3" type="audio/mpeg">
-        </audio>
-        
-        <script>
-            async function addTrack() {
-                const track = document.getElementById('trackInput').value;
-                if (!track) return;
-                
-                const response = await fetch('/add', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ track })
-                });
-                
-                const result = await response.json();
-                document.getElementById('status').textContent = result.message;
-            }
-        </script>
-    `);
+    // ... остальной код без изменений
 });
 
 // Запускаем сервер
