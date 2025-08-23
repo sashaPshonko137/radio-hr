@@ -398,8 +398,81 @@ const server = http.createServer(async (req, res) => {
         
         return;
     }
+        // OPTIONS для CORS
+    if (req.url === '/add' && req.method === 'OPTIONS') {
+        res.writeHead(200, {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type'
+        });
+        res.end();
+        return;
+    }
 
-    // ... остальной код без изменений
+     // Обслуживаем аудиопоток
+    if (req.url === '/stream.mp3') {
+        if (audioFilesCache.length === 0) {
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Нет аудиофайлов');
+            return;
+        }
+
+        console.log(`🎧 Новый клиент подключился (всего: ${activeConnections.size + 1})`);
+        activeConnections.add(res);
+
+        res.writeHead(200, {
+            'Content-Type': 'audio/mpeg',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Transfer-Encoding': 'chunked'
+        });
+
+        const currentTrack = audioFilesCache[currentTrackIndex];
+        const elapsed = Date.now() - trackStartTime;
+        const positionMs = Math.min(elapsed, currentTrack.duration - 1000);
+
+        sendTrackFromPosition(res, currentTrack, positionMs);
+
+        req.on('close', () => {
+            console.log('🎧 Клиент отключился');
+            activeConnections.delete(res);
+        });
+
+        res.on('finish', () => {
+            activeConnections.delete(res);
+        });
+
+        return;
+    }
+
+    // Главная страница
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`
+        <h1>🎧 Highrise Radio</h1>
+        <p>Добавить трек в очередь (после текущего):</p>
+        <input type="text" id="trackInput" placeholder="Название трека">
+        <button onclick="addTrack()">Добавить</button>
+        <p id="status"></p>
+        <audio controls>
+            <source src="/stream.mp3" type="audio/mpeg">
+        </audio>
+        
+        <script>
+            async function addTrack() {
+                const track = document.getElementById('trackInput').value;
+                if (!track) return;
+                
+                const response = await fetch('/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ track })
+                });
+                
+                const result = await response.json();
+                document.getElementById('status').textContent = result.message;
+            }
+        </script>
+    `);
 });
 
 // Запускаем сервер
