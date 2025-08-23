@@ -148,6 +148,7 @@ async function downloadYouTubeTrack(videoUrl, trackName) {
 }
 
 // Получаем список аудиофайлов с точными длительностями
+// Получаем список аудиофайлов с точными длительностями
 async function getAudioFilesWithDurations() {
     try {
         const files = fs.readdirSync(AUDIO_DIR)
@@ -167,7 +168,8 @@ async function getAudioFilesWithDurations() {
                 filesWithDurations.push({
                     path: filePath,
                     duration: durationMs,
-                    name: path.basename(filePath, path.extname(filePath))
+                    name: path.basename(filePath, path.extname(filePath)),
+                    isDownloaded: false // ЭТО ВАЖНО - статические файлы не удаляем!
                 });
                 
             } catch (error) {
@@ -175,7 +177,8 @@ async function getAudioFilesWithDurations() {
                 filesWithDurations.push({
                     path: filePath,
                     duration: 180000,
-                    name: path.basename(filePath, path.extname(filePath))
+                    name: path.basename(filePath, path.extname(filePath)),
+                    isDownloaded: false // Статические файлы не удаляем
                 });
             }
         }
@@ -228,11 +231,11 @@ async function addTrackToQueue(trackName) {
             console.error('❌ Ошибка чтения длительности:', error);
         }
         
-        const newTrack = {
+         const newTrack = {
             path: filePath,
             duration: durationMs,
             name: path.basename(filePath, path.extname(filePath)),
-            isDownloaded: true // Помечаем как скачанный для последующего удаления
+            isDownloaded: true // ЭТО ВАЖНО - скачанные файлы удаляем!
         };
         
         // Добавляем трек СРАЗУ ПОСЛЕ ТЕКУЩЕГО
@@ -330,8 +333,8 @@ function sendTrackFromPosition(res, track, positionMs) {
     }
 
     readStream.on('end', () => {
-        // Удаляем файл ПОСЛЕ завершения отправки
-        if (track.path.includes(AUDIO_DIR)) {
+        // Удаляем файл ТОЛЬКО если он был скачан (помечен isDownloaded)
+        if (track.isDownloaded && track.path.includes(AUDIO_DIR)) {
             setTimeout(() => safeDeleteFile(track.path), 1000);
         }
     });
