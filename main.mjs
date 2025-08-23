@@ -13,7 +13,6 @@ function getServerIP() {
     const interfaces = os.networkInterfaces();
     for (const interfaceName of Object.keys(interfaces)) {
         for (const iface of interfaces[interfaceName]) {
-            // Пропускаем внутренние и не-IPv4 адреса
             if (iface.family === 'IPv4' && !iface.internal) {
                 return iface.address;
             }
@@ -23,11 +22,6 @@ function getServerIP() {
 }
 
 const SERVER_IP = getServerIP();
-
-// Функция для безопасного кодирования заголовков
-function safeHeader(value) {
-    return Buffer.from(value, 'utf8').toString('binary');
-}
 
 // Получаем список аудиофайлов
 function getAudioFiles() {
@@ -58,7 +52,10 @@ Length1=-1
 Version=2
 `;
 
-        res.writeHead(200, { 'Content-Type': 'audio/x-scpls' });
+        res.writeHead(200, { 
+            'Content-Type': 'audio/x-scpls',
+            'Cache-Control': 'no-cache'
+        });
         res.end(plsContent);
         return;
     }
@@ -75,18 +72,12 @@ Version=2
             return;
         }
 
-        // Устанавливаем заголовки для радио-стрима (ICY) с безопасным кодированием
+        // Устанавливаем только базовые заголовки (без icy-*)
         res.writeHead(200, {
             'Content-Type': 'audio/mpeg',
-            'Transfer-Encoding': 'chunked',
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',
-            'icy-name': safeHeader('Highrise Radio'),
-            'icy-genre': safeHeader('Music'),
-            'icy-description': safeHeader('Highrise Radio Stream'),
-            'icy-url': `http://${SERVER_IP}:${PORT}`,
-            'icy-pub': '1',
-            'icy-metaint': '8192'
+            'Transfer-Encoding': 'chunked'
         });
 
         let index = 0;
@@ -125,7 +116,10 @@ Version=2
     }
 
     // === 3. Главная страница (для проверки) ===
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.writeHead(200, { 
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache'
+    });
     res.end(`
     <h1>🎧 Highrise Radio</h1>
     <p>Подключи в Highrise:</p>
