@@ -6,14 +6,16 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 
 // Проверяем доступность yt-dlp при старте
-let queueVersion = 0;
-
-// В функцию addTrackToQueue добавьте:
-queueVersion++;
-console.log(`🔄 Версия очереди: ${queueVersion}, треков: ${audioFilesCache.length}`);
-
-// В функцию playNextTrack добавьте:
-console.log(`🎵 Трек ${currentTrackIndex + 1}/${audioFilesCache.length}`);
+async function initialize() {
+    const hasYtDlp = await checkYtDlp();
+    if (!hasYtDlp) {
+        console.log('💡 Для скачивания треков выполните:');
+        console.log('wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O ~/yt-dlp');
+        console.log('chmod +x ~/yt-dlp');
+    }
+    
+    // ... остальная инициализация
+}
 import { parseFile } from 'music-metadata';
 import { exec } from 'child_process';
 
@@ -212,6 +214,15 @@ let audioFilesCache = [];
 let currentTrackIndex = 0;
 let trackStartTime = Date.now();
 let activeConnections = new Set();
+
+let queueVersion = 0;
+
+// В функцию addTrackToQueue добавьте:
+queueVersion++;
+console.log(`🔄 Версия очереди: ${queueVersion}, треков: ${audioFilesCache.length}`);
+
+// В функцию playNextTrack добавьте:
+console.log(`🎵 Трек ${currentTrackIndex + 1}/${audioFilesCache.length}`);
 
 // Функция для добавления трека в очередь (после текущего)
 // Функция для добавления трека в очередь (после текущего)
