@@ -38,6 +38,38 @@ function getAudioFiles() {
     }
 }
 
+// Функция для контроля скорости отправки
+function createThrottledStream(readStream, bitrate = 128) {
+    const bytesPerSecond = (bitrate * 1000) / 8; // 128 kbps → 16000 bytes/sec
+    
+    let bytesSent = 0;
+    let startTime = Date.now();
+    
+    return new Readable({
+        read(size) {
+            const chunk = readStream.read(size);
+            if (chunk) {
+                bytesSent += chunk.length;
+                
+                // Вычисляем, сколько времени должно было пройти для этой скорости
+                const targetTime = startTime + (bytesSent / bytesPerSecond) * 1000;
+                const currentTime = Date.now();
+                const delay = Math.max(0, targetTime - currentTime);
+                
+                if (delay > 0) {
+                    setTimeout(() => {
+                        this.push(chunk);
+                    }, delay);
+                } else {
+                    this.push(chunk);
+                }
+            } else {
+                readStream.once('readable', () => this.read(size));
+            }
+        }
+    });
+}
+
 // Создаём сервер
 const server = http.createServer((req, res) => {
     // Обслуживаем только аудиопоток
@@ -61,45 +93,40 @@ const server = http.createServer((req, res) => {
         });
 
         let currentIndex = 0;
-        let isSending = false;
 
-        async function sendNextTrack() {
-            if (isSending) return;
-            isSending = true;
-
+        function sendNextTrack() {
             const filePath = files[currentIndex];
             const fileName = path.basename(filePath, path.extname(filePath));
             
             console.log(`▶️  Начинаем воспроизведение: ${fileName}`);
 
-            try {
-                const readStream = fs.createReadStream(filePath);
-                
-                // Отправляем файл клиенту
-                readStream.pipe(res, { end: false });
+            const readStream = fs.createReadStream(filePath);
+            
+            // Простая задержка между чанками
+            readStream.on('data', (chunk) => {
+                if (!res.finished) {
+                    // Искусственно замедляем отправку
+                    setTimeout(() => {
+                        if (!res.finished) {
+                            res.write(chunk);
+                        }
+                    }, 100); // Задержка 100ms между чанками
+                }
+            });
 
-                readStream.on('end', () => {
-                    console.log(`✅ Трек завершен: ${fileName}`);
-                    currentIndex = (currentIndex + 1) % files.length;
-                    isSending = false;
-                    
-                    // Немедленно начинаем следующий трек
-                    sendNextTrack();
-                });
-
-                readStream.on('error', (err) => {
-                    console.error('❌ Ошибка чтения файла:', err);
-                    currentIndex = (currentIndex + 1) % files.length;
-                    isSending = false;
-                    setTimeout(sendNextTrack, 1000);
-                });
-
-            } catch (error) {
-                console.error('❌ Ошибка:', error);
+            readStream.on('end', () => {
+                console.log(`✅ Трек завершен: ${fileName}`);
                 currentIndex = (currentIndex + 1) % files.length;
-                isSending = false;
+                
+                // Короткая пауза между треками (1 секунда)
                 setTimeout(sendNextTrack, 1000);
-            }
+            });
+
+            readStream.on('error', (err) => {
+                console.error('❌ Ошибка чтения файла:', err);
+                currentIndex = (currentIndex + 1) % files.length;
+                setTimeout(sendNextTrack, 1000);
+            });
         }
 
         // Начинаем поток
@@ -107,7 +134,6 @@ const server = http.createServer((req, res) => {
 
         req.on('close', () => {
             console.log('🎧 Клиент отключился');
-            isSending = false;
         });
 
         return;
