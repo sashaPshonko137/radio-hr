@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
+import musicMetadata from 'music-metadata';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'audio');
@@ -23,15 +24,42 @@ function getServerIP() {
 
 const SERVER_IP = getServerIP();
 
-// Получаем список аудиофайлов
-function getAudioFiles() {
+// Получаем список аудиофайлов с их длительностями
+async function getAudioFilesWithDurations() {
     try {
-        return fs.readdirSync(AUDIO_DIR)
+        const files = fs.readdirSync(AUDIO_DIR)
             .filter(file => {
                 const ext = path.extname(file).toLowerCase();
-                return ['.mp3', '.wav', '.ogg'].includes(ext);
+                return ['.mp3', '.wav', '.ogg', '.m4a', '.flac'].includes(ext);
             })
             .map(file => path.join(AUDIO_DIR, file));
+
+        const filesWithDurations = [];
+        
+        for (const filePath of files) {
+            try {
+                const metadata = await musicMetadata.parseFile(filePath);
+                const durationMs = metadata.format.duration ? Math.round(metadata.format.duration * 1000) : 180000;
+                
+                filesWithDurations.push({
+                    path: filePath,
+                    duration: durationMs,
+                    name: path.basename(filePath, path.extname(filePath))
+                });
+                
+                console.log(`📊 ${path.basename(filePath)}: ${Math.round(durationMs / 1000)} сек`);
+            } catch (error) {
+                console.error(`❌ Ошибка чтения метаданных ${filePath}:`, error);
+                // Используем длительность по умолчанию 3 минуты
+                filesWithDurations.push({
+                    path: filePath,
+                    duration: 180000,
+                    name: path.basename(filePath, path.extname(filePath))
+                });
+            }
+        }
+        
+        return filesWithDurations;
     } catch (err) {
         console.error('Ошибка чтения папки audio:', err);
         return [];
@@ -39,10 +67,10 @@ function getAudioFiles() {
 }
 
 // Создаём сервер
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
     // Обслуживаем только аудиопоток
     if (req.url === '/stream.mp3') {
-        const files = getAudioFiles();
+        const files = await getAudioFilesWithDurations();
         if (files.length === 0) {
             res.writeHead(500, { 'Content-Type': 'text/plain' });
             res.end('Нет аудиофайлов в папке "audio"');
@@ -52,32 +80,46 @@ const server = http.createServer((req, res) => {
 
         console.log('🎵 Клиент подключился к радио');
 
-        // Устанавливаем заголовки
+        // Устанавливаем заголовки для бесконечного потока
         res.writeHead(200, {
             'Content-Type': 'audio/mpeg',
             'Cache-Control': 'no-cache',
-            'Connection': 'close'
+            'Connection': 'keep-alive',
+            'Transfer-Encoding': 'chunked'
         });
 
-        // Просто отправляем один случайный трек и закрываем соединение
-        const randomIndex = Math.floor(Math.random() * files.length);
-        const filePath = files[randomIndex];
-        const fileName = path.basename(filePath, path.extname(filePath));
-        
-        console.log(`▶️  Отправляем: ${fileName}`);
+        let currentIndex = 0;
 
-        // Отправляем файл целиком
-        const fileStream = fs.createReadStream(filePath);
-        fileStream.pipe(res);
+        async function sendNextTrack() {
+            if (files.length === 0) return;
 
-        fileStream.on('end', () => {
-            console.log(`✅ Файл отправлен: ${fileName}`);
-        });
+            const track = files[currentIndex];
+            console.log(`▶️  Воспроизведение: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
 
-        fileStream.on('error', (err) => {
-            console.error('❌ Ошибка чтения файла:', err);
-            res.end();
-        });
+            // Отправляем текущий трек
+            const readStream = fs.createReadStream(track.path);
+            readStream.pipe(res, { end: false });
+
+            readStream.on('end', () => {
+                console.log(`✅ Трек завершен: ${track.name}`);
+                
+                // Переходим к следующему треку
+                currentIndex = (currentIndex + 1) % files.length;
+                
+                // Ждем точное время длительности трека перед отправкой следующего
+                setTimeout(sendNextTrack, track.duration);
+            });
+
+            readStream.on('error', (err) => {
+                console.error('❌ Ошибка чтения файла:', err);
+                // Переходим к следующему треку через короткую паузу
+                currentIndex = (currentIndex + 1) % files.length;
+                setTimeout(sendNextTrack, 1000);
+            });
+        }
+
+        // Начинаем поток
+        sendNextTrack();
 
         req.on('close', () => {
             console.log('🎧 Клиент отключился');
@@ -91,13 +133,16 @@ const server = http.createServer((req, res) => {
     res.end('Highrise Radio Server\nИспользуйте /stream.mp3 для получения аудио');
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`
+// Запускаем сервер
+getAudioFilesWithDurations().then(() => {
+    server.listen(PORT, '0.0.0.0', () => {
+        console.log(`
 🚀 Сервер запущен: http://localhost:${PORT}
 🎧 Подключи в Highrise: http://${SERVER_IP}:${PORT}/stream.mp3
 
 📁 Аудиофайлы из папки: ${AUDIO_DIR}
 🌐 Сервер доступен по IP: ${SERVER_IP}
-📻 Режим: один трек на подключение
+📻 Режим: бесконечный поток с точными длительностями
 `);
+    });
 });
