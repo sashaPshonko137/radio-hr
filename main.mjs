@@ -24,6 +24,75 @@ function getServerIP() {
 
 const SERVER_IP = getServerIP();
 
+// Альтернативный способ поиска через YouTube API
+async function searchYouTube(trackName) {
+    try {
+        console.log(`🔍 Ищем трек: "${trackName}"`);
+        
+        // Используем простой поиск через регулярки
+        const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(trackName)}`;
+        const response = await fetch(searchUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        });
+        
+        const html = await response.text();
+        
+        // Ищем videoId в HTML
+        const regex = /"videoId":"([^"]{11})"/g;
+        const matches = [];
+        let match;
+        
+        while ((match = regex.exec(html)) !== null) {
+            matches.push(match[1]);
+        }
+        
+        // Убираем дубликаты
+        const uniqueMatches = [...new Set(matches)];
+        
+        if (uniqueMatches.length === 0) {
+            console.log('❌ Трек не найден');
+            return null;
+        }
+        
+        const videoId = uniqueMatches[0];
+        const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+        
+        console.log(`📥 Найден видео: ${videoUrl}`);
+        return videoUrl;
+        
+    } catch (error) {
+        console.error('❌ Ошибка поиска:', error);
+        return null;
+    }
+}
+
+// Функция для получения прямых ссылок на аудио
+async function getAudioStreamUrl(videoUrl) {
+    try {
+        // Временное решение: возвращаем URL для прямого потока
+        // На практике нужно использовать библиотеку для извлечения ссылок
+        const response = await fetch(videoUrl);
+        const html = await response.text();
+        
+        // Попробуем найти ссылку на аудио в HTML
+        const regex = /(https?:\/\/[^"]*\.googlevideo\.com[^"]*audio[^"]*)/;
+        const match = html.match(regex);
+        
+        if (match) {
+            return match[1];
+        }
+        
+        // Если не нашли, вернем оригинальный URL (для демонстрации)
+        return videoUrl;
+        
+    } catch (error) {
+        console.error('❌ Ошибка получения аудио:', error);
+        return null;
+    }
+}
+
 // Получаем список аудиофайлов с точными длительностями
 async function getAudioFilesWithDurations() {
     try {
@@ -47,7 +116,6 @@ async function getAudioFilesWithDurations() {
                     name: path.basename(filePath, path.extname(filePath))
                 });
                 
-                console.log(`📊 ${path.basename(filePath)}: ${Math.round(durationMs / 1000)} сек`);
             } catch (error) {
                 console.error(`❌ Ошибка чтения метаданных ${filePath}:`, error);
                 filesWithDurations.push({
@@ -71,18 +139,38 @@ let currentTrackIndex = 0;
 let trackStartTime = Date.now();
 let activeConnections = new Set();
 
+// Функция для добавления трека в очередь (после текущего)
+async function addTrackToQueue(trackName) {
+    console.log(`🎵 Добавляем в очередь: "${trackName}"`);
+    
+    // Временно: просто добавляем заглушку
+    // В реальном приложении здесь должна быть логика скачивания
+    const newTrack = {
+        path: path.join(AUDIO_DIR, 'example.mp3'), // Заглушка
+        duration: 180000, // 3 минуты
+        name: trackName
+    };
+    
+    // Добавляем трек СРАЗУ ПОСЛЕ ТЕКУЩЕГО
+    const insertIndex = currentTrackIndex + 1;
+    audioFilesCache.splice(insertIndex, 0, newTrack);
+    
+    console.log(`✅ Трек добавлен в позицию ${insertIndex + 1}: ${trackName}`);
+    console.log(`⏱️  Будет воспроизведен после текущего трека`);
+    
+    return true;
+}
+
 // Предзагружаем информацию о файлах
 getAudioFilesWithDurations().then(files => {
     audioFilesCache = files;
     console.log(`✅ Загружено ${files.length} треков с точными длительностями`);
     
-    // Выводим порядок треков
     console.log('\n🎵 Порядок воспроизведения:');
     audioFilesCache.forEach((track, index) => {
         console.log(`${index + 1}. ${track.name} (${Math.round(track.duration / 1000)} сек)`);
     });
     
-    // Запускаем глобальный таймер для смены треков
     startGlobalTrackTimer();
 }).catch(err => {
     console.error('❌ Ошибка загрузки треков:', err);
@@ -96,42 +184,41 @@ function startGlobalTrackTimer() {
         const track = audioFilesCache[currentTrackIndex];
         trackStartTime = Date.now();
         
-        console.log(`\n🌐 Трек ${currentTrackIndex + 1}/${audioFilesCache.length}: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
+        console.log(`\n🌐 Сейчас играет: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
         
-        // Уведомляем всех активных клиентов о смене трека
         activeConnections.forEach(res => {
             if (!res.finished) {
-                // Отправляем новый трек с начала
                 sendTrackFromPosition(res, track, 0);
             }
         });
 
-        // Планируем следующую смену трека
         setTimeout(playNextTrack, track.duration);
         
-        // Переходим к следующему треку по порядку
         currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
     }
 
-    // Запускаем первый трек
-    console.log(`\n🚀 Начинаем воспроизведение с первого трека`);
+    console.log(`\n🚀 Начинаем воспроизведение`);
     playNextTrack();
 }
 
 // Отправка трека с определенной позиции
 function sendTrackFromPosition(res, track, positionMs) {
     if (positionMs >= track.duration) {
-        console.log('⚠️  Позиция превышает длительность трека, начинаем с начала');
         positionMs = 0;
     }
 
-    console.log(`📡 Отправка клиенту: ${track.name} (с позиции: ${Math.round(positionMs / 1000)} сек)`);
-    
+    // Проверяем существует ли файл
+    if (!fs.existsSync(track.path)) {
+        console.error(`❌ Файл не существует: ${track.path}`);
+        if (!res.finished) {
+            res.end();
+        }
+        return;
+    }
+
     const readStream = fs.createReadStream(track.path);
     
-    // Если нужно начать не с начала, пропускаем часть данных
     if (positionMs > 0) {
-        // Примерная оценка: 1 секунда ≈ 16KB при 128kbps
         const bytesToSkip = Math.floor((positionMs / 1000) * 16000);
         let bytesSkipped = 0;
         
@@ -139,7 +226,6 @@ function sendTrackFromPosition(res, track, positionMs) {
             if (bytesSkipped < bytesToSkip) {
                 bytesSkipped += chunk.length;
                 if (bytesSkipped >= bytesToSkip) {
-                    // Начинаем отправлять оставшиеся данные
                     const remainingChunk = chunk.slice(bytesToSkip - (bytesSkipped - chunk.length));
                     if (remainingChunk.length > 0 && !res.finished) {
                         res.write(remainingChunk);
@@ -152,7 +238,6 @@ function sendTrackFromPosition(res, track, positionMs) {
             }
         });
     } else {
-        // Отправляем с начала
         readStream.pipe(res, { end: false });
     }
 
@@ -166,21 +251,70 @@ function sendTrackFromPosition(res, track, positionMs) {
 
 // Создаём сервер
 const server = http.createServer(async (req, res) => {
-    // Обслуживаем только аудиопоток
+    // POST роут для добавления трека
+    if (req.url === '/add' && req.method === 'POST') {
+        let body = '';
+        
+        req.on('data', chunk => {
+            body += chunk.toString();
+        });
+        
+        req.on('end', async () => {
+            try {
+                const { track } = JSON.parse(body);
+                
+                if (!track) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, message: 'Не указано название трека' }));
+                    return;
+                }
+                
+                console.log(`📨 POST запрос на добавление: "${track}"`);
+                const success = await addTrackToQueue(track);
+                
+                res.writeHead(200, { 
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type'
+                });
+                
+                res.end(JSON.stringify({ 
+                    success, 
+                    message: success ? 'Трек добавлен в очередь после текущего' : 'Ошибка добавления трека' 
+                }));
+                
+            } catch (error) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, message: 'Ошибка сервера' }));
+            }
+        });
+        
+        return;
+    }
+
+    // OPTIONS для CORS
+    if (req.url === '/add' && req.method === 'OPTIONS') {
+        res.writeHead(200, {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type'
+        });
+        res.end();
+        return;
+    }
+
+    // Обслуживаем аудиопоток
     if (req.url === '/stream.mp3') {
         if (audioFilesCache.length === 0) {
             res.writeHead(500, { 'Content-Type': 'text/plain' });
-            res.end('Нет аудиофайлов в папке "audio"');
-            console.error('❌ Нет аудиофайлов!');
+            res.end('Нет аудиофайлов');
             return;
         }
 
         console.log(`🎧 Новый клиент подключился (всего: ${activeConnections.size + 1})`);
-
-        // Добавляем клиента в активные соединения
         activeConnections.add(res);
 
-        // Устанавливаем заголовки для бесконечного потока
         res.writeHead(200, {
             'Content-Type': 'audio/mpeg',
             'Cache-Control': 'no-cache',
@@ -188,17 +322,12 @@ const server = http.createServer(async (req, res) => {
             'Transfer-Encoding': 'chunked'
         });
 
-        // Отправляем текущий играющий трек с текущей позиции
         const currentTrack = audioFilesCache[currentTrackIndex];
         const elapsed = Date.now() - trackStartTime;
-        const positionMs = Math.min(elapsed, currentTrack.duration - 1000); // -1 сек чтобы избежать конца трека
+        const positionMs = Math.min(elapsed, currentTrack.duration - 1000);
 
-        console.log(`⏱️  Клиент получает: ${currentTrack.name} (позиция: ${Math.round(positionMs / 1000)}/${Math.round(currentTrack.duration / 1000)} сек)`);
-
-        // Отправляем трек с текущей позиции
         sendTrackFromPosition(res, currentTrack, positionMs);
 
-        // Обработка отключения клиента
         req.on('close', () => {
             console.log('🎧 Клиент отключился');
             activeConnections.delete(res);
@@ -211,9 +340,34 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Для всех остальных запросов - простой текст
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Highrise Radio Server\nИспользуйте /stream.mp3 для получения аудио');
+    // Главная страница
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`
+        <h1>🎧 Highrise Radio</h1>
+        <p>Добавить трек в очередь (после текущего):</p>
+        <input type="text" id="trackInput" placeholder="Название трека">
+        <button onclick="addTrack()">Добавить</button>
+        <p id="status"></p>
+        <audio controls>
+            <source src="/stream.mp3" type="audio/mpeg">
+        </audio>
+        
+        <script>
+            async function addTrack() {
+                const track = document.getElementById('trackInput').value;
+                if (!track) return;
+                
+                const response = await fetch('/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ track })
+                });
+                
+                const result = await response.json();
+                document.getElementById('status').textContent = result.message;
+            }
+        </script>
+    `);
 });
 
 // Запускаем сервер
@@ -221,14 +375,15 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`
 🚀 Сервер запущен: http://localhost:${PORT}
 🎧 Подключи в Highrise: http://${SERVER_IP}:${PORT}/stream.mp3
+➕ Добавить трек: POST http://${SERVER_IP}:${PORT}/add
 
 📁 Аудиофайлы из папки: ${AUDIO_DIR}
 🌐 Сервер доступен по IP: ${SERVER_IP}
-📻 Режим: последовательное воспроизведение по порядку
+
+⚠️  Функция скачивания временно отключена из-за проблем с YouTube API
 `);
 });
 
-// Очистка при завершении
 process.on('SIGINT', () => {
     console.log('\n🛑 Выключаем сервер...');
     activeConnections.forEach(res => {
