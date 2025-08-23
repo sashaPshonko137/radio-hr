@@ -205,7 +205,7 @@ async function getAudioFilesWithDurations() {
 let audioFilesCache = []; // Очередь треков
 let queueStartTime = Date.now(); // Время начала воспроизведения очереди
 let trackStartTimes = []; // Время начала каждого трека в очереди
-let activeConnections = new Set();
+let activeConnections = new Map(); // Теперь храним req и res вместе
 
 // Функция для добавления трека в очередь (после текущего)
 async function addTrackToQueue(trackName) {
@@ -292,15 +292,27 @@ function getCurrentTrackInfo() {
     }
     
     // Если очередь пуста или мы прошли всю очередь
-    return {
-        index: 0,
-        track: audioFilesCache[0],
-        positionMs: 0
-    };
+    if (audioFilesCache.length > 0) {
+        // Зацикливаем очередь
+        const cycleTime = currentTime % totalDuration;
+        totalDuration = 0;
+        for (let i = 0; i < audioFilesCache.length; i++) {
+            if (cycleTime < totalDuration + audioFilesCache[i].duration) {
+                return {
+                    index: i,
+                    track: audioFilesCache[i],
+                    positionMs: cycleTime - totalDuration
+                };
+            }
+            totalDuration += audioFilesCache[i].duration;
+        }
+    }
+    
+    return null;
 }
 
 // Отправляем трек с нужной позиции
-function sendTrackFromPosition(res, track, positionMs) {
+function sendTrackFromPosition(req, res, track, positionMs) {
     if (!track || !fs.existsSync(track.path)) {
         console.error(`❌ Файл не существует: ${track ? track.path : 'undefined'}`);
         if (!res.finished) res.end();
@@ -335,7 +347,10 @@ function sendTrackFromPosition(res, track, positionMs) {
     ffmpeg.stderr.on('data', () => {});
 
     // Останавливаем ffmpeg при отключении клиента
-    req.on('close', () => ffmpeg.kill());
+    req.on('close', () => {
+        console.log('🔌 Клиент отключился, останавливаем ffmpeg');
+        ffmpeg.kill();
+    });
 }
 
 // Загружаем файлы и запускаем таймер
@@ -365,14 +380,21 @@ function startPlaybackLoop() {
             return;
         }
 
-        const { index, track, positionMs } = getCurrentTrackInfo();
+        const trackInfo = getCurrentTrackInfo();
+        if (!trackInfo) {
+            console.log('❌ Не удалось определить текущий трек, перезапускаем...');
+            setTimeout(playNextTrack, 5000);
+            return;
+        }
+        
+        const { index, track, positionMs } = trackInfo;
         console.log(`\n🌐 Сейчас играет: ${track.name} (${Math.round(track.duration / 1000)}с), позиция: ${Math.round(positionMs / 1000)}с`);
         console.log(`📊 В очереди: ${audioFilesCache.length} треков`);
 
         // Обновляем очередь для всех активных соединений
-        activeConnections.forEach(res => {
+        activeConnections.forEach(({req, res}) => {
             if (!res.finished) {
-                sendTrackFromPosition(res, track, positionMs);
+                sendTrackFromPosition(req, res, track, positionMs);
             }
         });
 
@@ -435,22 +457,32 @@ const server = http.createServer(async (req, res) => {
         }
 
         console.log(`🎧 Новый клиент подключился (всего: ${activeConnections.size + 1})`);
-        activeConnections.add(res);
+        
+        // Сохраняем и req, и res для этого соединения
+        const connectionId = Date.now() + Math.random();
+        activeConnections.set(connectionId, { req, res });
 
         // Получаем текущий трек и позицию
-        const { track, positionMs } = getCurrentTrackInfo();
+        const trackInfo = getCurrentTrackInfo();
+        if (!trackInfo) {
+            res.writeHead(500).end('Не удалось определить текущий трек');
+            activeConnections.delete(connectionId);
+            return;
+        }
+        
+        const { track, positionMs } = trackInfo;
 
         // Отправляем поток с нужной позиции
-        sendTrackFromPosition(res, track, positionMs);
+        sendTrackFromPosition(req, res, track, positionMs);
 
         // Удаляем соединение при закрытии
         req.on('close', () => {
             console.log('🔌 Клиент отключился');
-            activeConnections.delete(res);
+            activeConnections.delete(connectionId);
         });
         
         res.on('finish', () => {
-            activeConnections.delete(res);
+            activeConnections.delete(connectionId);
         });
 
         return;
@@ -501,6 +533,8 @@ server.listen(PORT, '0.0.0.0', () => {
 
 process.on('SIGINT', () => {
     console.log('\n🛑 Выключение...');
-    activeConnections.forEach(res => res.end());
+    activeConnections.forEach(({res}) => {
+        if (!res.finished) res.end();
+    });
     process.exit();
 });
