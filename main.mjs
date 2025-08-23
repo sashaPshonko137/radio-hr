@@ -38,6 +38,28 @@ function getAudioFiles() {
     }
 }
 
+// Функция для получения длительности аудиофайла (в миллисекундах)
+function getAudioDuration(filePath) {
+    return new Promise((resolve) => {
+        // Простая реализация: для MP3 примерно 1MB = 1 минута
+        // Можно улучшить с помощью библиотеки like 'music-metadata'
+        fs.stat(filePath, (err, stats) => {
+            if (err) {
+                console.error('Ошибка получения информации о файле:', err);
+                resolve(180000); // 3 минуты по умолчанию
+                return;
+            }
+            
+            // Примерная оценка: 1MB ≈ 1 минута музыки (128kbps)
+            const fileSizeMB = stats.size / (1024 * 1024);
+            const durationMs = fileSizeMB * 60000; // 1MB = 60000ms (1 минута)
+            
+            // Ограничиваем разумными пределами
+            resolve(Math.max(30000, Math.min(durationMs, 600000))); // от 30 сек до 10 мин
+        });
+    });
+}
+
 // Создаём сервер
 const server = http.createServer((req, res) => {
     const url = req.url;
@@ -81,28 +103,57 @@ Version=2
         });
 
         let index = 0;
+        let isSending = false;
 
-        function sendNextFile() {
+        async function sendNextFile() {
+            if (isSending) return;
+            isSending = true;
+
             const filePath = files[index];
             const fileName = path.basename(filePath, path.extname(filePath));
 
             console.log(`🎵 Начинаем отправку: ${fileName}`);
 
-            const readStream = fs.createReadStream(filePath);
+            try {
+                // Получаем длительность текущего трека
+                const duration = await getAudioDuration(filePath);
+                console.log(`⏱️  Примерная длительность: ${Math.round(duration / 1000)} сек`);
 
-            // Отправляем файл клиенту
-            readStream.pipe(res, { end: false });
+                const readStream = fs.createReadStream(filePath);
 
-            readStream.on('end', () => {
+                // Отправляем файл клиенту
+                readStream.pipe(res, { end: false });
+
+                readStream.on('end', () => {
+                    console.log(`✅ Файл отправлен: ${fileName}`);
+                    index = (index + 1) % files.length;
+                    
+                    // Ждём полную длительность трека перед отправкой следующего
+                    setTimeout(() => {
+                        isSending = false;
+                        sendNextFile();
+                    }, duration);
+                });
+
+                readStream.on('error', (err) => {
+                    console.error('❌ Ошибка чтения файла:', err);
+                    isSending = false;
+                    if (!res.finished) {
+                        // Переходим к следующему файлу через короткую паузу
+                        setTimeout(() => {
+                            index = (index + 1) % files.length;
+                            sendNextFile();
+                        }, 1000);
+                    }
+                });
+
+            } catch (error) {
+                console.error('❌ Ошибка:', error);
+                isSending = false;
+                // Переходим к следующему файлу
                 index = (index + 1) % files.length;
-                console.log(`✅ Файл отправлен. Следующий: ${path.basename(files[index])}`);
-                setTimeout(sendNextFile, 100);
-            });
-
-            readStream.on('error', (err) => {
-                console.error('❌ Ошибка чтения файла:', err);
-                if (!res.finished) res.end();
-            });
+                setTimeout(sendNextFile, 1000);
+            }
         }
 
         // Начинаем стрим
@@ -110,6 +161,7 @@ Version=2
 
         req.on('close', () => {
             console.log('🎧 Клиент отключился');
+            isSending = false;
         });
 
         return;
