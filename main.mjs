@@ -95,8 +95,8 @@ function startGlobalTrackTimer() {
         // Уведомляем всех активных клиентов о смене трека
         activeConnections.forEach(res => {
             if (!res.finished) {
-                // Заголовки уже отправлены, просто начинаем новый трек
-                sendTrackToClient(res, track);
+                // Отправляем новый трек с начала
+                sendTrackFromPosition(res, track, 0);
             }
         });
 
@@ -111,12 +111,45 @@ function startGlobalTrackTimer() {
     playNextTrack();
 }
 
-// Отправка трека конкретному клиенту
-function sendTrackToClient(res, track) {
-    console.log(`📡 Отправка клиенту: ${track.name}`);
+// Отправка трека с определенной позиции
+function sendTrackFromPosition(res, track, positionMs) {
+    if (positionMs >= track.duration) {
+        console.log('⚠️  Позиция превышает длительность трека, начинаем с начала');
+        positionMs = 0;
+    }
+
+    console.log(`📡 Отправка клиенту: ${track.name} (с позиции: ${Math.round(positionMs / 1000)} сек)`);
     
+    // Для MP3 файлов можно использовать простой seek через пропуск байтов
+    // (это упрощенная реализация, для точного seek нужна более сложная логика)
     const readStream = fs.createReadStream(track.path);
-    readStream.pipe(res, { end: false });
+    
+    // Если нужно начать не с начала, пропускаем часть данных
+    if (positionMs > 0) {
+        // Примерная оценка: 1 секунда ≈ 16KB при 128kbps
+        const bytesToSkip = Math.floor((positionMs / 1000) * 16000);
+        let bytesSkipped = 0;
+        
+        readStream.on('data', (chunk) => {
+            if (bytesSkipped < bytesToSkip) {
+                bytesSkipped += chunk.length;
+                if (bytesSkipped >= bytesToSkip) {
+                    // Начинаем отправлять оставшиеся данные
+                    const remainingChunk = chunk.slice(bytesToSkip - (bytesSkipped - chunk.length));
+                    if (remainingChunk.length > 0 && !res.finished) {
+                        res.write(remainingChunk);
+                    }
+                }
+            } else {
+                if (!res.finished) {
+                    res.write(chunk);
+                }
+            }
+        });
+    } else {
+        // Отправляем с начала
+        readStream.pipe(res, { end: false });
+    }
 
     readStream.on('error', (err) => {
         console.error('❌ Ошибка отправки трека:', err);
@@ -150,24 +183,23 @@ const server = http.createServer(async (req, res) => {
             'Transfer-Encoding': 'chunked'
         });
 
-        // Отправляем текущий играющий трек
+        // Отправляем текущий играющий трек с текущей позиции
         const currentTrack = audioFilesCache[currentTrackIndex];
         const elapsed = Date.now() - trackStartTime;
-        const remaining = Math.max(0, currentTrack.duration - elapsed);
+        const positionMs = Math.min(elapsed, currentTrack.duration - 1000); // -1 сек чтобы избежать конца трека
 
-        console.log(`⏱️  Клиент получает: ${currentTrack.name} (осталось: ${Math.round(remaining / 1000)} сек)`);
+        console.log(`⏱️  Клиент получает: ${currentTrack.name} (позиция: ${Math.round(positionMs / 1000)}/${Math.round(currentTrack.duration / 1000)} сек)`);
 
-        // Если трек уже играет какое-то время, отправляем его с текущей позиции
-        if (elapsed > 1000) {
-            // Для простоты отправляем трек с начала, но можно реализовать seek
-            sendTrackToClient(res, currentTrack);
-        } else {
-            sendTrackToClient(res, currentTrack);
-        }
+        // Отправляем трек с текущей позиции
+        sendTrackFromPosition(res, currentTrack, positionMs);
 
         // Обработка отключения клиента
         req.on('close', () => {
             console.log('🎧 Клиент отключился');
+            activeConnections.delete(res);
+        });
+
+        res.on('finish', () => {
             activeConnections.delete(res);
         });
 
@@ -187,7 +219,7 @@ server.listen(PORT, '0.0.0.0', () => {
 
 📁 Аудиофайлы из папки: ${AUDIO_DIR}
 🌐 Сервер доступен по IP: ${SERVER_IP}
-📻 Режим: синхронизированный поток для всех клиентов
+📻 Режим: синхронизированный поток с продолжением с текущей позиции
 `);
 });
 
