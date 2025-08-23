@@ -6,16 +6,14 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 
 // Проверяем доступность yt-dlp при старте
-async function initialize() {
-    const hasYtDlp = await checkYtDlp();
-    if (!hasYtDlp) {
-        console.log('💡 Для скачивания треков выполните:');
-        console.log('wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O ~/yt-dlp');
-        console.log('chmod +x ~/yt-dlp');
-    }
-    
-    // ... остальная инициализация
-}
+let queueVersion = 0;
+
+// В функцию addTrackToQueue добавьте:
+queueVersion++;
+console.log(`🔄 Версия очереди: ${queueVersion}, треков: ${audioFilesCache.length}`);
+
+// В функцию playNextTrack добавьте:
+console.log(`🎵 Трек ${currentTrackIndex + 1}/${audioFilesCache.length}`);
 import { parseFile } from 'music-metadata';
 import { exec } from 'child_process';
 
@@ -142,11 +140,30 @@ async function downloadYouTubeTrack(videoUrl, trackName) {
         console.log(`▶️  Выполняем: ${command}`);
         
         exec(command, { timeout: 120000 }, (error, stdout, stderr) => {
-            // ... остальной код без изменений
+            if (error) {
+                console.error('❌ Ошибка скачивания:', error);
+                console.error('stderr:', stderr);
+                reject(error);
+                return;
+            }
+            
+            console.log('✅ Скачивание завершено');
+            
+            // Ищем скачанный файл
+            const files = fs.readdirSync(AUDIO_DIR);
+            const newFile = files.find(f => f.startsWith(safeName) && f.endsWith('.mp3'));
+            
+            if (newFile) {
+                const filePath = path.join(AUDIO_DIR, newFile);
+                console.log(`📁 Файл найден: ${filePath}`);
+                resolve(filePath);
+            } else {
+                console.error('❌ Скачанный файл не найден');
+                reject(new Error('Файл не найден'));
+            }
         });
     });
 }
-
 // Получаем список аудиофайлов с точными длительностями
 // Получаем список аудиофайлов с точными длительностями
 async function getAudioFilesWithDurations() {
@@ -235,11 +252,11 @@ async function addTrackToQueue(trackName) {
             path: filePath,
             duration: durationMs,
             name: path.basename(filePath, path.extname(filePath)),
-            isDownloaded: true // ЭТО ВАЖНО - скачанные файлы удаляем!
+            isDownloaded: true
         };
         
-        // Добавляем трек СРАЗУ ПОСЛЕ ТЕКУЩЕГО
-        const insertIndex = currentTrackIndex + 1;
+        // ИСПРАВЛЕННЫЙ КОД ДОБАВЛЕНИЯ:
+        const insertIndex = (currentTrackIndex + 1) % (audioFilesCache.length + 1);
         audioFilesCache.splice(insertIndex, 0, newTrack);
         
         console.log(`✅ Трек добавлен в позицию ${insertIndex + 1}: ${newTrack.name}`);
@@ -270,13 +287,23 @@ getAudioFilesWithDurations().then(files => {
 
 // Глобальный таймер для смены треков
 function startGlobalTrackTimer() {
-    if (audioFilesCache.length === 0) return;
+    if (audioFilesCache.length === 0) {
+        console.log('⏸️  Очередь пуста, ждем треки...');
+        return;
+    }
 
     function playNextTrack() {
+        if (audioFilesCache.length === 0) {
+            console.log('⏸️  Очередь пуста, ждем треки...');
+            setTimeout(playNextTrack, 5000); // Проверяем каждые 5 секунд
+            return;
+        }
+
         const track = audioFilesCache[currentTrackIndex];
         trackStartTime = Date.now();
         
         console.log(`\n🌐 Сейчас играет: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
+        console.log(`📊 В очереди: ${audioFilesCache.length} треков`);
         
         activeConnections.forEach(res => {
             if (!res.finished) {
