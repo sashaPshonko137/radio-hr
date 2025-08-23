@@ -258,7 +258,7 @@ function startPlaybackLoop() {
 
         activeConnections.forEach(res => {
             if (!res.finished) {
-                sendTrackFromPosition(res, track, 0);
+                sendTrackFromPosition(res, track, 0, req);
             }
         });
 
@@ -274,7 +274,7 @@ function startPlaybackLoop() {
 }
 
 // Отправляем трек с нужной позиции (используем ffmpeg для точности)
-function sendTrackFromPosition(res, track, positionMs) {
+function sendTrackFromPosition(res, track, positionMs, req) {
     if (positionMs >= track.duration) positionMs = 0;
     if (!fs.existsSync(track.path)) {
         if (!res.finished) res.end();
@@ -300,9 +300,14 @@ function sendTrackFromPosition(res, track, positionMs) {
         if (!res.finished) res.end();
     });
 
-    ffmpeg.stderr.on('data', () => {}); // можно логировать при отладке
+    // Игнорируем stderr (для чистоты логов)
+    ffmpeg.stderr.on('data', () => {});
 
-    req.on('close', () => ffmpeg.kill());
+    // ✅ Теперь req доступен
+    req.on('close', () => {
+        console.log('🔌 Клиент отключился, останавливаем ffmpeg');
+        ffmpeg.kill();
+    });
 }
 
 // Сервер
@@ -383,7 +388,7 @@ const server = http.createServer(async (req, res) => {
             }
         }
 
-        sendTrackFromPosition(res, currentTrack, positionInTrack);
+        sendTrackFromPosition(res, currentTrack, positionInTrack, req);
 
         req.on('close', () => activeConnections.delete(res));
         res.on('finish', () => activeConnections.delete(res));
