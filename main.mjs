@@ -38,38 +38,6 @@ function getAudioFiles() {
     }
 }
 
-// Функция для контроля скорости отправки
-function createThrottledStream(readStream, bitrate = 128) {
-    const bytesPerSecond = (bitrate * 1000) / 8; // 128 kbps → 16000 bytes/sec
-    
-    let bytesSent = 0;
-    let startTime = Date.now();
-    
-    return new Readable({
-        read(size) {
-            const chunk = readStream.read(size);
-            if (chunk) {
-                bytesSent += chunk.length;
-                
-                // Вычисляем, сколько времени должно было пройти для этой скорости
-                const targetTime = startTime + (bytesSent / bytesPerSecond) * 1000;
-                const currentTime = Date.now();
-                const delay = Math.max(0, targetTime - currentTime);
-                
-                if (delay > 0) {
-                    setTimeout(() => {
-                        this.push(chunk);
-                    }, delay);
-                } else {
-                    this.push(chunk);
-                }
-            } else {
-                readStream.once('readable', () => this.read(size));
-            }
-        }
-    });
-}
-
 // Создаём сервер
 const server = http.createServer((req, res) => {
     // Обслуживаем только аудиопоток
@@ -93,39 +61,87 @@ const server = http.createServer((req, res) => {
         });
 
         let currentIndex = 0;
+        let isPlaying = false;
 
         function sendNextTrack() {
+            if (isPlaying) return;
+            isPlaying = true;
+
             const filePath = files[currentIndex];
             const fileName = path.basename(filePath, path.extname(filePath));
             
             console.log(`▶️  Начинаем воспроизведение: ${fileName}`);
 
-            const readStream = fs.createReadStream(filePath);
-            
-            // Простая задержка между чанками
-            readStream.on('data', (chunk) => {
-                if (!res.finished) {
-                    // Искусственно замедляем отправку
-                    setTimeout(() => {
-                        if (!res.finished) {
-                            res.write(chunk);
-                        }
-                    }, 100); // Задержка 100ms между чанками
+            // Получаем информацию о файле для расчета времени
+            fs.stat(filePath, (err, stats) => {
+                if (err) {
+                    console.error('Ошибка получения информации о файле:', err);
+                    isPlaying = false;
+                    currentIndex = (currentIndex + 1) % files.length;
+                    setTimeout(sendNextTrack, 1000);
+                    return;
                 }
-            });
 
-            readStream.on('end', () => {
-                console.log(`✅ Трек завершен: ${fileName}`);
-                currentIndex = (currentIndex + 1) % files.length;
+                // Предполагаем, что 1MB ≈ 1 минута музыки (128kbps)
+                const fileSizeMB = stats.size / (1024 * 1024);
+                const estimatedDuration = fileSizeMB * 60000; // в миллисекундах
                 
-                // Короткая пауза между треками (1 секунда)
-                setTimeout(sendNextTrack, 1000);
-            });
+                console.log(`⏱️  Примерная длительность: ${Math.round(estimatedDuration / 1000)} сек`);
 
-            readStream.on('error', (err) => {
-                console.error('❌ Ошибка чтения файла:', err);
-                currentIndex = (currentIndex + 1) % files.length;
-                setTimeout(sendNextTrack, 1000);
+                const readStream = fs.createReadStream(filePath);
+                let startTime = Date.now();
+                let bytesSent = 0;
+
+                // Функция для отправки с правильной скоростью
+                function sendChunk() {
+                    const chunk = readStream.read();
+                    if (chunk && !res.finished) {
+                        bytesSent += chunk.length;
+                        
+                        // Рассчитываем, когда должен быть отправлен этот чанк
+                        const elapsed = Date.now() - startTime;
+                        const targetTime = (bytesSent / stats.size) * estimatedDuration;
+                        const delay = Math.max(0, targetTime - elapsed);
+                        
+                        if (delay > 0) {
+                            setTimeout(() => {
+                                if (!res.finished) {
+                                    res.write(chunk);
+                                    sendChunk();
+                                }
+                            }, delay);
+                        } else {
+                            res.write(chunk);
+                            sendChunk();
+                        }
+                    } else if (!chunk) {
+                        // Ждем новых данных
+                        readStream.once('readable', sendChunk);
+                    }
+                }
+
+                readStream.on('readable', sendChunk);
+
+                readStream.on('end', () => {
+                    const actualTime = Date.now() - startTime;
+                    console.log(`✅ Трек завершен: ${fileName} (${Math.round(actualTime / 1000)} сек)`);
+                    
+                    // Ждем оставшееся время, если трек "воспроизводился" быстрее
+                    const remainingTime = Math.max(0, estimatedDuration - actualTime);
+                    
+                    setTimeout(() => {
+                        isPlaying = false;
+                        currentIndex = (currentIndex + 1) % files.length;
+                        sendNextTrack();
+                    }, remainingTime + 1000); // +1 секунда паузы между треками
+                });
+
+                readStream.on('error', (err) => {
+                    console.error('❌ Ошибка чтения файла:', err);
+                    isPlaying = false;
+                    currentIndex = (currentIndex + 1) % files.length;
+                    setTimeout(sendNextTrack, 1000);
+                });
             });
         }
 
@@ -134,6 +150,7 @@ const server = http.createServer((req, res) => {
 
         req.on('close', () => {
             console.log('🎧 Клиент отключился');
+            isPlaying = false;
         });
 
         return;
@@ -151,6 +168,6 @@ server.listen(PORT, '0.0.0.0', () => {
 
 📁 Аудиофайлы из папки: ${AUDIO_DIR}
 🌐 Сервер доступен по IP: ${SERVER_IP}
-📻 Режим: бесконечный радио-поток
+📻 Режим: бесконечный радио-поток с контролем скорости
 `);
 });
