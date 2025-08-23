@@ -38,9 +38,6 @@ function getAudioFiles() {
     }
 }
 
-// Глобальный индекс для ротации треков
-let currentIndex = 0;
-
 // Создаём сервер
 const server = http.createServer((req, res) => {
     // Обслуживаем только аудиопоток
@@ -53,41 +50,64 @@ const server = http.createServer((req, res) => {
             return;
         }
 
-        // Выбираем следующий трек по кругу
-        const filePath = files[currentIndex];
-        const fileName = path.basename(filePath, path.extname(filePath));
-        
-        console.log(`🎵 Клиент подключился, отправляем: ${fileName}`);
-        
-        // Увеличиваем индекс для следующего подключения
-        currentIndex = (currentIndex + 1) % files.length;
+        console.log('🎵 Клиент подключился к радио');
 
-        // Устанавливаем заголовки
+        // Устанавливаем заголовки для бесконечного потока
         res.writeHead(200, {
             'Content-Type': 'audio/mpeg',
             'Cache-Control': 'no-cache',
-            'Connection': 'close',
-            'Content-Length': fs.statSync(filePath).size
+            'Connection': 'keep-alive',
+            'Transfer-Encoding': 'chunked'
         });
 
-        // Создаем поток чтения и отправляем файл
-        const readStream = fs.createReadStream(filePath);
-        
-        readStream.pipe(res);
+        let currentIndex = 0;
+        let isSending = false;
 
-        readStream.on('end', () => {
-            console.log(`✅ Файл отправлен: ${fileName}`);
-        });
+        async function sendNextTrack() {
+            if (isSending) return;
+            isSending = true;
 
-        readStream.on('error', (err) => {
-            console.error('❌ Ошибка чтения файла:', err);
-            if (!res.finished) {
-                res.end();
+            const filePath = files[currentIndex];
+            const fileName = path.basename(filePath, path.extname(filePath));
+            
+            console.log(`▶️  Начинаем воспроизведение: ${fileName}`);
+
+            try {
+                const readStream = fs.createReadStream(filePath);
+                
+                // Отправляем файл клиенту
+                readStream.pipe(res, { end: false });
+
+                readStream.on('end', () => {
+                    console.log(`✅ Трек завершен: ${fileName}`);
+                    currentIndex = (currentIndex + 1) % files.length;
+                    isSending = false;
+                    
+                    // Немедленно начинаем следующий трек
+                    sendNextTrack();
+                });
+
+                readStream.on('error', (err) => {
+                    console.error('❌ Ошибка чтения файла:', err);
+                    currentIndex = (currentIndex + 1) % files.length;
+                    isSending = false;
+                    setTimeout(sendNextTrack, 1000);
+                });
+
+            } catch (error) {
+                console.error('❌ Ошибка:', error);
+                currentIndex = (currentIndex + 1) % files.length;
+                isSending = false;
+                setTimeout(sendNextTrack, 1000);
             }
-        });
+        }
+
+        // Начинаем поток
+        sendNextTrack();
 
         req.on('close', () => {
             console.log('🎧 Клиент отключился');
+            isSending = false;
         });
 
         return;
@@ -105,6 +125,6 @@ server.listen(PORT, '0.0.0.0', () => {
 
 📁 Аудиофайлы из папки: ${AUDIO_DIR}
 🌐 Сервер доступен по IP: ${SERVER_IP}
-📻 Режим: один трек на подключение
+📻 Режим: бесконечный радио-поток
 `);
 });
