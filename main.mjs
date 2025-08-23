@@ -76,6 +76,12 @@ getAudioFilesWithDurations().then(files => {
     audioFilesCache = files;
     console.log(`✅ Загружено ${files.length} треков с точными длительностями`);
     
+    // Выводим порядок треков
+    console.log('\n🎵 Порядок воспроизведения:');
+    audioFilesCache.forEach((track, index) => {
+        console.log(`${index + 1}. ${track.name} (${Math.round(track.duration / 1000)} сек)`);
+    });
+    
     // Запускаем глобальный таймер для смены треков
     startGlobalTrackTimer();
 }).catch(err => {
@@ -90,7 +96,7 @@ function startGlobalTrackTimer() {
         const track = audioFilesCache[currentTrackIndex];
         trackStartTime = Date.now();
         
-        console.log(`🌐 Глобально играет: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
+        console.log(`\n🌐 Трек ${currentTrackIndex + 1}/${audioFilesCache.length}: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
         
         // Уведомляем всех активных клиентов о смене трека
         activeConnections.forEach(res => {
@@ -103,11 +109,12 @@ function startGlobalTrackTimer() {
         // Планируем следующую смену трека
         setTimeout(playNextTrack, track.duration);
         
-        // Переходим к следующему треку
+        // Переходим к следующему треку по порядку
         currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
     }
 
     // Запускаем первый трек
+    console.log(`\n🚀 Начинаем воспроизведение с первого трека`);
     playNextTrack();
 }
 
@@ -120,8 +127,6 @@ function sendTrackFromPosition(res, track, positionMs) {
 
     console.log(`📡 Отправка клиенту: ${track.name} (с позиции: ${Math.round(positionMs / 1000)} сек)`);
     
-    // Для MP3 файлов можно использовать простой seek через пропуск байтов
-    // (это упрощенная реализация, для точного seek нужна более сложная логика)
     const readStream = fs.createReadStream(track.path);
     
     // Если нужно начать не с начала, пропускаем часть данных
@@ -219,7 +224,7 @@ server.listen(PORT, '0.0.0.0', () => {
 
 📁 Аудиофайлы из папки: ${AUDIO_DIR}
 🌐 Сервер доступен по IP: ${SERVER_IP}
-📻 Режим: синхронизированный поток с продолжением с текущей позиции
+📻 Режим: последовательное воспроизведение по порядку
 `);
 });
 
