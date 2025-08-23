@@ -2,7 +2,20 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+// В начале файла добавьте
 import os from 'os';
+
+// Проверяем доступность yt-dlp при старте
+async function initialize() {
+    const hasYtDlp = await checkYtDlp();
+    if (!hasYtDlp) {
+        console.log('💡 Для скачивания треков выполните:');
+        console.log('wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O ~/yt-dlp');
+        console.log('chmod +x ~/yt-dlp');
+    }
+    
+    // ... остальная инициализация
+}
 import { parseFile } from 'music-metadata';
 import { exec } from 'child_process';
 
@@ -26,15 +39,26 @@ function getServerIP() {
 const SERVER_IP = getServerIP();
 
 // Проверяем установлен ли yt-dlp
+// Проверяем установлен ли yt-dlp
 async function checkYtDlp() {
     return new Promise((resolve) => {
-        exec('which yt-dlp', (error) => {
-            if (error) {
-                console.log('❌ yt-dlp не установлен. Установите: sudo apt install yt-dlp');
-                resolve(false);
-            } else {
-                console.log('✅ yt-dlp установлен');
+        // Проверяем несколько возможных мест
+        const checkCommands = [
+            'test -f ~/yt-dlp && echo "home"',
+            'which yt-dlp 2>/dev/null && echo "system"',
+            'test -f /usr/local/bin/yt-dlp && echo "local"'
+        ];
+        
+        exec(checkCommands.join(' || '), (error, stdout) => {
+            if (stdout && stdout.trim()) {
+                const location = stdout.trim();
+                console.log(`✅ yt-dlp найден (${location})`);
                 resolve(true);
+            } else {
+                console.log('❌ yt-dlp не найден. Скачайте:');
+                console.log('wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O ~/yt-dlp');
+                console.log('chmod +x ~/yt-dlp');
+                resolve(false);
             }
         });
     });
@@ -97,33 +121,17 @@ async function downloadYouTubeTrack(videoUrl, trackName) {
         const safeName = trackName.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 50);
         const outputTemplate = path.join(AUDIO_DIR, `${safeName}.%(ext)s`);
         
+        // Проверяем где находится yt-dlp
+        const ytDlpCommand = fs.existsSync(path.join(os.homedir(), 'yt-dlp')) ? 
+            path.join(os.homedir(), 'yt-dlp') : 'yt-dlp';
+        
         // Команда для yt-dlp
-        const command = `yt-dlp -x --audio-format mp3 --audio-quality 0 -o "${outputTemplate}" "${videoUrl}"`;
+        const command = `${ytDlpCommand} -x --audio-format mp3 --audio-quality 0 -o "${outputTemplate}" "${videoUrl}"`;
         
         console.log(`▶️  Выполняем: ${command}`);
         
         exec(command, { timeout: 120000 }, (error, stdout, stderr) => {
-            if (error) {
-                console.error('❌ Ошибка скачивания:', error);
-                console.error('stderr:', stderr);
-                reject(error);
-                return;
-            }
-            
-            console.log('✅ Скачивание завершено');
-            
-            // Ищем скачанный файл
-            const files = fs.readdirSync(AUDIO_DIR);
-            const newFile = files.find(f => f.startsWith(safeName) && f.endsWith('.mp3'));
-            
-            if (newFile) {
-                const filePath = path.join(AUDIO_DIR, newFile);
-                console.log(`📁 Файл найден: ${filePath}`);
-                resolve(filePath);
-            } else {
-                console.error('❌ Скачанный файл не найден');
-                reject(new Error('Файл не найден'));
-            }
+            // ... остальной код без изменений
         });
     });
 }
