@@ -2,10 +2,27 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import os from 'os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'audio');
 const PORT = 8000;
+
+// Функция для получения IP-адреса сервера
+function getServerIP() {
+    const interfaces = os.networkInterfaces();
+    for (const interfaceName of Object.keys(interfaces)) {
+        for (const iface of interfaces[interfaceName]) {
+            // Пропускаем внутренние и не-IPv4 адреса
+            if (iface.family === 'IPv4' && !iface.internal) {
+                return iface.address;
+            }
+        }
+    }
+    return 'localhost';
+}
+
+const SERVER_IP = getServerIP();
 
 // Функция для безопасного кодирования заголовков
 function safeHeader(value) {
@@ -35,7 +52,7 @@ const server = http.createServer((req, res) => {
     if (req.url === '/radio.pls') {
         const plsContent = `[playlist]
 NumberOfEntries=1
-File1=http://ваш-IP:${PORT}/stream.mp3
+File1=http://${SERVER_IP}:${PORT}/stream.mp3
 Title1=Highrise Radio
 Length1=-1
 Version=2
@@ -67,9 +84,9 @@ Version=2
             'icy-name': safeHeader('Highrise Radio'),
             'icy-genre': safeHeader('Music'),
             'icy-description': safeHeader('Highrise Radio Stream'),
-            'icy-url': `http://ваш-IP:${PORT}`,
+            'icy-url': `http://${SERVER_IP}:${PORT}`,
             'icy-pub': '1',
-            'icy-metaint': '8192' // Добавляем для совместимости
+            'icy-metaint': '8192'
         });
 
         let index = 0;
@@ -88,8 +105,7 @@ Version=2
             readStream.on('end', () => {
                 index = (index + 1) % files.length;
                 console.log(`✅ Файл отправлен. Следующий: ${path.basename(files[index])}`);
-                // Можно добавить паузу между треками
-                setTimeout(sendNextFile, 100); // 100мс пауза
+                setTimeout(sendNextFile, 100);
             });
 
             readStream.on('error', (err) => {
@@ -113,7 +129,7 @@ Version=2
     res.end(`
     <h1>🎧 Highrise Radio</h1>
     <p>Подключи в Highrise:</p>
-    <code>http://ваш-IP:${PORT}/radio.pls</code>
+    <code>http://${SERVER_IP}:${PORT}/radio.pls</code>
     <br><br>
     <audio controls autoplay>
       <source src="/stream.mp3" type="audio/mpeg">
@@ -128,10 +144,10 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`
 🚀 Сервер запущен: http://localhost:${PORT}
 🎧 Подключи в Highrise:
-   Вариант 1 (рекомендуется): http://ваш-IP:${PORT}/radio.pls
-   Вариант 2: http://ваш-IP:${PORT}/stream.mp3
+   Вариант 1 (рекомендуется): http://${SERVER_IP}:${PORT}/radio.pls
+   Вариант 2: http://${SERVER_IP}:${PORT}/stream.mp3
 
 📁 Аудиофайлы из папки: ${AUDIO_DIR}
-❗ Замени "ваш-IP" на реальный IP-адрес сервера!
+🌐 Сервер доступен по IP: ${SERVER_IP}
 `);
 });
