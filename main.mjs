@@ -3,7 +3,6 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
-import musicMetadata from 'music-metadata';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'audio');
@@ -24,53 +23,39 @@ function getServerIP() {
 
 const SERVER_IP = getServerIP();
 
-// Получаем список аудиофайлов с их длительностями
-async function getAudioFilesWithDurations() {
+// Получаем список аудиофайлов
+function getAudioFiles() {
     try {
-        const files = fs.readdirSync(AUDIO_DIR)
+        return fs.readdirSync(AUDIO_DIR)
             .filter(file => {
                 const ext = path.extname(file).toLowerCase();
-                return ['.mp3', '.wav', '.ogg', '.m4a', '.flac'].includes(ext);
+                return ['.mp3', '.wav', '.ogg'].includes(ext);
             })
             .map(file => path.join(AUDIO_DIR, file));
-
-        const filesWithDurations = [];
-        
-        for (const filePath of files) {
-            try {
-                const metadata = await musicMetadata.parseFile(filePath);
-                const durationMs = metadata.format.duration ? Math.round(metadata.format.duration * 1000) : 180000;
-                
-                filesWithDurations.push({
-                    path: filePath,
-                    duration: durationMs,
-                    name: path.basename(filePath, path.extname(filePath))
-                });
-                
-                console.log(`📊 ${path.basename(filePath)}: ${Math.round(durationMs / 1000)} сек`);
-            } catch (error) {
-                console.error(`❌ Ошибка чтения метаданных ${filePath}:`, error);
-                // Используем длительность по умолчанию 3 минуты
-                filesWithDurations.push({
-                    path: filePath,
-                    duration: 180000,
-                    name: path.basename(filePath, path.extname(filePath))
-                });
-            }
-        }
-        
-        return filesWithDurations;
     } catch (err) {
         console.error('Ошибка чтения папки audio:', err);
         return [];
     }
 }
 
+// Простая функция для оценки длительности MP3 (1MB ≈ 1 минута при 128kbps)
+function estimateDuration(filePath) {
+    try {
+        const stats = fs.statSync(filePath);
+        const fileSizeMB = stats.size / (1024 * 1024);
+        const durationMs = fileSizeMB * 60000; // 1MB = 60000ms (1 минута)
+        return Math.max(30000, Math.min(durationMs, 600000)); // от 30 сек до 10 мин
+    } catch (error) {
+        console.error('Ошибка оценки длительности:', error);
+        return 180000; // 3 минуты по умолчанию
+    }
+}
+
 // Создаём сервер
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => {
     // Обслуживаем только аудиопоток
     if (req.url === '/stream.mp3') {
-        const files = await getAudioFilesWithDurations();
+        const files = getAudioFiles();
         if (files.length === 0) {
             res.writeHead(500, { 'Content-Type': 'text/plain' });
             res.end('Нет аудиофайлов в папке "audio"');
@@ -90,24 +75,27 @@ const server = http.createServer(async (req, res) => {
 
         let currentIndex = 0;
 
-        async function sendNextTrack() {
+        function sendNextTrack() {
             if (files.length === 0) return;
 
-            const track = files[currentIndex];
-            console.log(`▶️  Воспроизведение: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
+            const filePath = files[currentIndex];
+            const fileName = path.basename(filePath, path.extname(filePath));
+            const duration = estimateDuration(filePath);
+            
+            console.log(`▶️  Воспроизведение: ${fileName} (${Math.round(duration / 1000)} сек)`);
 
             // Отправляем текущий трек
-            const readStream = fs.createReadStream(track.path);
+            const readStream = fs.createReadStream(filePath);
             readStream.pipe(res, { end: false });
 
             readStream.on('end', () => {
-                console.log(`✅ Трек завершен: ${track.name}`);
+                console.log(`✅ Трек завершен: ${fileName}`);
                 
                 // Переходим к следующему треку
                 currentIndex = (currentIndex + 1) % files.length;
                 
                 // Ждем точное время длительности трека перед отправкой следующего
-                setTimeout(sendNextTrack, track.duration);
+                setTimeout(sendNextTrack, duration);
             });
 
             readStream.on('error', (err) => {
@@ -134,15 +122,13 @@ const server = http.createServer(async (req, res) => {
 });
 
 // Запускаем сервер
-getAudioFilesWithDurations().then(() => {
-    server.listen(PORT, '0.0.0.0', () => {
-        console.log(`
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`
 🚀 Сервер запущен: http://localhost:${PORT}
 🎧 Подключи в Highrise: http://${SERVER_IP}:${PORT}/stream.mp3
 
 📁 Аудиофайлы из папки: ${AUDIO_DIR}
 🌐 Сервер доступен по IP: ${SERVER_IP}
-📻 Режим: бесконечный поток с точными длительностями
+📻 Режим: бесконечный поток с оценкой длительностей
 `);
-    });
 });
