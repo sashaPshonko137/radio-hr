@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
 import { parseFile } from 'music-metadata';
+import { exec } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'audio');
@@ -24,43 +25,63 @@ function getServerIP() {
 
 const SERVER_IP = getServerIP();
 
-// Альтернативный способ поиска через YouTube API
+// Проверяем установлен ли yt-dlp
+async function checkYtDlp() {
+    return new Promise((resolve) => {
+        exec('which yt-dlp', (error) => {
+            if (error) {
+                console.log('❌ yt-dlp не установлен. Установите: sudo apt install yt-dlp');
+                resolve(false);
+            } else {
+                console.log('✅ yt-dlp установлен');
+                resolve(true);
+            }
+        });
+    });
+}
+
+// Проверяем установлен ли ffmpeg
+async function checkFfmpeg() {
+    return new Promise((resolve) => {
+        exec('which ffmpeg', (error) => {
+            if (error) {
+                console.log('❌ ffmpeg не установлен. Установите: sudo apt install ffmpeg');
+                resolve(false);
+            } else {
+                console.log('✅ ffmpeg установлен');
+                resolve(true);
+            }
+        });
+    });
+}
+
+// Поиск трека на YouTube
 async function searchYouTube(trackName) {
     try {
         console.log(`🔍 Ищем трек: "${trackName}"`);
         
-        // Используем простой поиск через регулярки
         const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(trackName)}`;
         const response = await fetch(searchUrl, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
             }
         });
         
         const html = await response.text();
         
         // Ищем videoId в HTML
-        const regex = /"videoId":"([^"]{11})"/g;
-        const matches = [];
-        let match;
+        const regex = /"videoId":"([^"]{11})"/;
+        const match = html.match(regex);
         
-        while ((match = regex.exec(html)) !== null) {
-            matches.push(match[1]);
+        if (match && match[1]) {
+            const videoId = match[1];
+            const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+            console.log(`✅ Найден видео: ${videoUrl}`);
+            return videoUrl;
         }
         
-        // Убираем дубликаты
-        const uniqueMatches = [...new Set(matches)];
-        
-        if (uniqueMatches.length === 0) {
-            console.log('❌ Трек не найден');
-            return null;
-        }
-        
-        const videoId = uniqueMatches[0];
-        const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-        
-        console.log(`📥 Найден видео: ${videoUrl}`);
-        return videoUrl;
+        console.log('❌ Трек не найден');
+        return null;
         
     } catch (error) {
         console.error('❌ Ошибка поиска:', error);
@@ -68,29 +89,43 @@ async function searchYouTube(trackName) {
     }
 }
 
-// Функция для получения прямых ссылок на аудио
-async function getAudioStreamUrl(videoUrl) {
-    try {
-        // Временное решение: возвращаем URL для прямого потока
-        // На практике нужно использовать библиотеку для извлечения ссылок
-        const response = await fetch(videoUrl);
-        const html = await response.text();
+// Скачивание через yt-dlp
+async function downloadYouTubeTrack(videoUrl, trackName) {
+    return new Promise((resolve, reject) => {
+        console.log(`📥 Скачиваем: ${videoUrl}`);
         
-        // Попробуем найти ссылку на аудио в HTML
-        const regex = /(https?:\/\/[^"]*\.googlevideo\.com[^"]*audio[^"]*)/;
-        const match = html.match(regex);
+        const safeName = trackName.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 50);
+        const outputTemplate = path.join(AUDIO_DIR, `${safeName}.%(ext)s`);
         
-        if (match) {
-            return match[1];
-        }
+        // Команда для yt-dlp
+        const command = `yt-dlp -x --audio-format mp3 --audio-quality 0 -o "${outputTemplate}" "${videoUrl}"`;
         
-        // Если не нашли, вернем оригинальный URL (для демонстрации)
-        return videoUrl;
+        console.log(`▶️  Выполняем: ${command}`);
         
-    } catch (error) {
-        console.error('❌ Ошибка получения аудио:', error);
-        return null;
-    }
+        exec(command, { timeout: 120000 }, (error, stdout, stderr) => {
+            if (error) {
+                console.error('❌ Ошибка скачивания:', error);
+                console.error('stderr:', stderr);
+                reject(error);
+                return;
+            }
+            
+            console.log('✅ Скачивание завершено');
+            
+            // Ищем скачанный файл
+            const files = fs.readdirSync(AUDIO_DIR);
+            const newFile = files.find(f => f.startsWith(safeName) && f.endsWith('.mp3'));
+            
+            if (newFile) {
+                const filePath = path.join(AUDIO_DIR, newFile);
+                console.log(`📁 Файл найден: ${filePath}`);
+                resolve(filePath);
+            } else {
+                console.error('❌ Скачанный файл не найден');
+                reject(new Error('Файл не найден'));
+            }
+        });
+    });
 }
 
 // Получаем список аудиофайлов с точными длительностями
@@ -143,22 +178,55 @@ let activeConnections = new Set();
 async function addTrackToQueue(trackName) {
     console.log(`🎵 Добавляем в очередь: "${trackName}"`);
     
-    // Временно: просто добавляем заглушку
-    // В реальном приложении здесь должна быть логика скачивания
-    const newTrack = {
-        path: path.join(AUDIO_DIR, 'example.mp3'), // Заглушка
-        duration: 180000, // 3 минуты
-        name: trackName
-    };
-    
-    // Добавляем трек СРАЗУ ПОСЛЕ ТЕКУЩЕГО
-    const insertIndex = currentTrackIndex + 1;
-    audioFilesCache.splice(insertIndex, 0, newTrack);
-    
-    console.log(`✅ Трек добавлен в позицию ${insertIndex + 1}: ${trackName}`);
-    console.log(`⏱️  Будет воспроизведен после текущего трека`);
-    
-    return true;
+    try {
+        // Проверяем зависимости
+        const hasYtDlp = await checkYtDlp();
+        if (!hasYtDlp) {
+            throw new Error('yt-dlp не установлен');
+        }
+
+        // Ищем трек на YouTube
+        const videoUrl = await searchYouTube(trackName);
+        if (!videoUrl) {
+            console.log('❌ Трек не найден');
+            return false;
+        }
+        
+        // Скачиваем трек
+        const filePath = await downloadYouTubeTrack(videoUrl, trackName);
+        if (!filePath) {
+            console.log('❌ Не удалось скачать трек');
+            return false;
+        }
+        
+        // Получаем длительность
+        let durationMs = 180000;
+        try {
+            const metadata = await parseFile(filePath);
+            durationMs = metadata.format.duration ? Math.round(metadata.format.duration * 1000) : 180000;
+        } catch (error) {
+            console.error('❌ Ошибка чтения длительности:', error);
+        }
+        
+        const newTrack = {
+            path: filePath,
+            duration: durationMs,
+            name: path.basename(filePath, path.extname(filePath))
+        };
+        
+        // Добавляем трек СРАЗУ ПОСЛЕ ТЕКУЩЕГО
+        const insertIndex = currentTrackIndex + 1;
+        audioFilesCache.splice(insertIndex, 0, newTrack);
+        
+        console.log(`✅ Трек добавлен в позицию ${insertIndex + 1}: ${newTrack.name}`);
+        console.log(`⏱️  Будет воспроизведен после текущего трека`);
+        
+        return true;
+        
+    } catch (error) {
+        console.error('❌ Ошибка добавления трека:', error);
+        return false;
+    }
 }
 
 // Предзагружаем информацию о файлах
@@ -207,7 +275,6 @@ function sendTrackFromPosition(res, track, positionMs) {
         positionMs = 0;
     }
 
-    // Проверяем существует ли файл
     if (!fs.existsSync(track.path)) {
         console.error(`❌ Файл не существует: ${track.path}`);
         if (!res.finished) {
@@ -380,7 +447,8 @@ server.listen(PORT, '0.0.0.0', () => {
 📁 Аудиофайлы из папки: ${AUDIO_DIR}
 🌐 Сервер доступен по IP: ${SERVER_IP}
 
-⚠️  Функция скачивания временно отключена из-за проблем с YouTube API
+💡 Для работы скачивания установи:
+sudo apt update && sudo apt install yt-dlp ffmpeg
 `);
 });
 
