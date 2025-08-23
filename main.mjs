@@ -50,7 +50,6 @@ async function getAudioFilesWithDurations() {
                 console.log(`📊 ${path.basename(filePath)}: ${Math.round(durationMs / 1000)} сек`);
             } catch (error) {
                 console.error(`❌ Ошибка чтения метаданных ${filePath}:`, error);
-                // Используем длительность по умолчанию 3 минуты
                 filesWithDurations.push({
                     path: filePath,
                     duration: 180000,
@@ -66,16 +65,66 @@ async function getAudioFilesWithDurations() {
     }
 }
 
-// Кэш файлов с длительностями
+// Глобальное состояние для синхронизации
 let audioFilesCache = [];
+let currentTrackIndex = 0;
+let trackStartTime = Date.now();
+let activeConnections = new Set();
 
 // Предзагружаем информацию о файлах
 getAudioFilesWithDurations().then(files => {
     audioFilesCache = files;
     console.log(`✅ Загружено ${files.length} треков с точными длительностями`);
+    
+    // Запускаем глобальный таймер для смены треков
+    startGlobalTrackTimer();
 }).catch(err => {
     console.error('❌ Ошибка загрузки треков:', err);
 });
+
+// Глобальный таймер для смены треков
+function startGlobalTrackTimer() {
+    if (audioFilesCache.length === 0) return;
+
+    function playNextTrack() {
+        const track = audioFilesCache[currentTrackIndex];
+        trackStartTime = Date.now();
+        
+        console.log(`🌐 Глобально играет: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
+        
+        // Уведомляем всех активных клиентов о смене трека
+        activeConnections.forEach(res => {
+            if (!res.finished) {
+                // Заголовки уже отправлены, просто начинаем новый трек
+                sendTrackToClient(res, track);
+            }
+        });
+
+        // Планируем следующую смену трека
+        setTimeout(playNextTrack, track.duration);
+        
+        // Переходим к следующему треку
+        currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+    }
+
+    // Запускаем первый трек
+    playNextTrack();
+}
+
+// Отправка трека конкретному клиенту
+function sendTrackToClient(res, track) {
+    console.log(`📡 Отправка клиенту: ${track.name}`);
+    
+    const readStream = fs.createReadStream(track.path);
+    readStream.pipe(res, { end: false });
+
+    readStream.on('error', (err) => {
+        console.error('❌ Ошибка отправки трека:', err);
+        if (!res.finished) {
+            res.end();
+        }
+    });
+}
 
 // Создаём сервер
 const server = http.createServer(async (req, res) => {
@@ -88,7 +137,10 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        console.log('🎵 Клиент подключился к радио');
+        console.log(`🎧 Новый клиент подключился (всего: ${activeConnections.size + 1})`);
+
+        // Добавляем клиента в активные соединения
+        activeConnections.add(res);
 
         // Устанавливаем заголовки для бесконечного потока
         res.writeHead(200, {
@@ -98,41 +150,25 @@ const server = http.createServer(async (req, res) => {
             'Transfer-Encoding': 'chunked'
         });
 
-        let currentIndex = 0;
+        // Отправляем текущий играющий трек
+        const currentTrack = audioFilesCache[currentTrackIndex];
+        const elapsed = Date.now() - trackStartTime;
+        const remaining = Math.max(0, currentTrack.duration - elapsed);
 
-        function sendNextTrack() {
-            if (audioFilesCache.length === 0) return;
+        console.log(`⏱️  Клиент получает: ${currentTrack.name} (осталось: ${Math.round(remaining / 1000)} сек)`);
 
-            const track = audioFilesCache[currentIndex];
-            console.log(`▶️  Воспроизведение: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
-
-            // Отправляем текущий трек
-            const readStream = fs.createReadStream(track.path);
-            readStream.pipe(res, { end: false });
-
-            readStream.on('end', () => {
-                console.log(`✅ Трек завершен: ${track.name}`);
-                
-                // Переходим к следующему треку
-                currentIndex = (currentIndex + 1) % audioFilesCache.length;
-                
-                // Ждем ТОЧНОЕ время длительности трека перед отправкой следующего
-                setTimeout(sendNextTrack, track.duration);
-            });
-
-            readStream.on('error', (err) => {
-                console.error('❌ Ошибка чтения файла:', err);
-                // Переходим к следующему треку через короткую паузу
-                currentIndex = (currentIndex + 1) % audioFilesCache.length;
-                setTimeout(sendNextTrack, 1000);
-            });
+        // Если трек уже играет какое-то время, отправляем его с текущей позиции
+        if (elapsed > 1000) {
+            // Для простоты отправляем трек с начала, но можно реализовать seek
+            sendTrackToClient(res, currentTrack);
+        } else {
+            sendTrackToClient(res, currentTrack);
         }
 
-        // Начинаем поток
-        sendNextTrack();
-
+        // Обработка отключения клиента
         req.on('close', () => {
             console.log('🎧 Клиент отключился');
+            activeConnections.delete(res);
         });
 
         return;
@@ -151,6 +187,15 @@ server.listen(PORT, '0.0.0.0', () => {
 
 📁 Аудиофайлы из папки: ${AUDIO_DIR}
 🌐 Сервер доступен по IP: ${SERVER_IP}
-📻 Режим: бесконечный поток с ТОЧНЫМИ длительностями
+📻 Режим: синхронизированный поток для всех клиентов
 `);
+});
+
+// Очистка при завершении
+process.on('SIGINT', () => {
+    console.log('\n🛑 Выключаем сервер...');
+    activeConnections.forEach(res => {
+        if (!res.finished) res.end();
+    });
+    process.exit(0);
 });
