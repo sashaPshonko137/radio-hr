@@ -583,7 +583,6 @@ if (req.url === '/stream.mp3') {
     }
 
     console.log(`🎧 Новый клиент подключился (всего: ${activeConnections.size + 1})`);
-    activeConnections.add(res);
 
     res.writeHead(200, {
         'Content-Type': 'audio/mpeg',
@@ -592,38 +591,81 @@ if (req.url === '/stream.mp3') {
         'Transfer-Encoding': 'chunked'
     });
 
-    // ИСПРАВЛЕНИЕ: Правильный расчет позиции
-    let positionMs = 0;
-    let currentTrack;
-    
-    if (isPlaying && trackStartTime > 0) {
+    // --- Настройки ---
+    const SKIP_THRESHOLD_MS = 30000;   // Если до конца <30 сек — пропускаем трек
+    const DELAY_IF_PLAYING_MS = 15000; // Если играет давно — начать на 15 сек позже
+
+    let currentTrack = null;
+    let nextTrack = null;
+    let action = '';
+    let delayBeforeStart = 0;
+
+    if (isPlaying && trackStartTime > 0 && currentTrackIndex >= 0 && currentTrackIndex < audioFilesCache.length) {
         currentTrack = audioFilesCache[currentTrackIndex];
         const elapsed = Date.now() - trackStartTime;
-        positionMs = Math.min(elapsed, currentTrack.duration - 1000);
+        const remainingMs = currentTrack.duration - elapsed;
+
+        if (remainingMs < SKIP_THRESHOLD_MS) {
+            // 🔹 Слишком мало времени — пропускаем текущий, начинаем следующий
+            const nextIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+            nextTrack = audioFilesCache[nextIndex];
+            action = 'skip';
+        } else {
+            // 🔹 Достаточно времени — включаем с задержкой
+            const startPosition = elapsed + DELAY_IF_PLAYING_MS;
+            const safePosition = Math.min(startPosition, currentTrack.duration - 1000); // не ближе 1 сек к концу
+
+            action = 'delayed';
+            delayBeforeStart = 0; // Начинаем сразу, но с позиции +15 сек
+
+            // Отправляем сразу
+            console.log(`🎧 Новый клиент: текущий трек "${currentTrack.name}", позиция: ${Math.round(safePosition / 1000)}с`);
+            sendTrackFromPosition(res, currentTrack, safePosition);
+            activeConnections.add(res);
+            return; // Выходим, чтобы не продолжать
+        }
     } else {
-        // Если воспроизведение не началось, играем первый трек с начала
-        currentTrack = audioFilesCache[0];
-        positionMs = 0;
-    }
-    
-    // Убедимся, что currentTrack определен
-    if (!currentTrack) {
-        currentTrack = audioFilesCache[0];
-        positionMs = 0;
+        // Если воспроизведение ещё не началось — начинаем с первого трека
+        nextTrack = audioFilesCache[0] || null;
+        action = 'first';
     }
 
-    console.log(`🎧 Новый клиент. Позиция: ${Math.round(positionMs/1000)} из ${Math.round(currentTrack.duration/1000)} сек`);
-    sendTrackFromPosition(res, currentTrack, positionMs);
+    // --- Обработка случая "пропускаем текущий" или "первый запуск" ---
+    if (nextTrack) {
+        console.log(`⏳ Ждём окончания текущего трека и начнём: "${nextTrack.name}"`);
 
-    req.on('close', () => {
-        console.log('🎧 Клиент отключился');
-        activeConnections.delete(res);
-    });
+        // Определяем, сколько ждать до конца текущего трека
+        const waitMs = currentTrack 
+            ? Math.max(1000, currentTrack.duration - (Date.now() - trackStartTime)) 
+            : 1000;
 
-    res.on('finish', () => {
-        activeConnections.delete(res);
-    });
+        delayBeforeStart = waitMs;
 
+        setTimeout(() => {
+            if (res.finished) return;
+
+            console.log(`▶️ Новый клиент начинает следующий трек: "${nextTrack.name}"`);
+            sendTrackFromPosition(res, nextTrack, 0);
+        }, waitMs);
+
+        // Добавляем в активные соединения, чтобы можно было отследить отключение
+        activeConnections.add(res);
+
+        // На всякий случай — если соединение оборвётся до таймаута
+        req.on('close', () => {
+            console.log('🎧 Клиент отключился до начала следующего трека');
+            activeConnections.delete(res);
+        });
+
+        res.on('finish', () => {
+            activeConnections.delete(res);
+        });
+
+        return;
+    }
+
+    // Если ничего не подошло
+    res.end();
     return;
 }
 
