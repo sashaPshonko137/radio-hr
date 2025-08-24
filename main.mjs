@@ -416,33 +416,38 @@ function startGlobalTrackTimer() {
         });
 
         // Увеличиваем индекс ПОСЛЕ завершения трека
-        nextTrackTimeout = setTimeout(() => {
-            // ДОБАВЛЕНО: Удаляем скачанный трек после воспроизведения
-            if (track.isDownloaded) {
-                console.log(`🗑️  Удаляем временный трек из очереди: ${track.name}`);
-                audioFilesCache.splice(currentTrackIndex, 1);
-                
-                // Корректируем индекс, если удалили трек
-                if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
-                    currentTrackIndex = 0;
-                }
-            } else {
-                // Просто переходим к следующему треку
-                currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-            }
-            
-            // ДОБАВЛЕНО: Проверка на пустую очередь после удаления
-            if (audioFilesCache.length === 0) {
-                console.log('⏸️  Очередь опустела после удаления трека');
-                return;
-            }
-            
-            // ДОБАВЛЕНО: 3-секундная пауза перед следующим треком
-            console.log('⏳ 3-секундная пауза между треками...');
-            setTimeout(() => {
-                playNextTrack();
-            }, 3000);
-        }, track.duration);
+nextTrackTimeout = setTimeout(() => {
+    const wasDownloaded = track.isDownloaded;
+
+    if (wasDownloaded) {
+        console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
+        audioFilesCache.splice(currentTrackIndex, 1);
+
+        // После удаления:
+        // - если очередь не пуста, currentTrackIndex остаётся на "следующем"
+        // - если вышли за пределы — сбрасываем
+        if (currentTrackIndex >= audioFilesCache.length) {
+            currentTrackIndex = 0;
+        }
+    } else {
+        // Статический трек — просто переходим к следующему
+        currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+    }
+
+    // Проверяем, остался ли хотя бы один трек
+    if (audioFilesCache.length === 0) {
+        console.log('⏸️  Очередь пуста после удаления');
+        isPlaying = false;
+        return;
+    }
+
+    // Пауза между треками
+    console.log('⏳ 3-секундная пауза между треками...');
+    setTimeout(() => {
+        playNextTrack();
+    }, 3000);
+
+}, track.duration);
     }
 
     // Сохраняем функцию для доступа извне
