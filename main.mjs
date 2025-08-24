@@ -597,8 +597,8 @@ if (req.url === '/stream.mp3') {
     });
 
     // --- Настройки ---
-    const SKIP_THRESHOLD_MS = 30000;   // Если до конца <30 сек — пропускаем трек
-    const DELAY_IF_PLAYING_MS = 15000; // Если играет давно — начать на 15 сек позже
+    const SKIP_THRESHOLD_MS = 35000;   // Если до конца <30 сек — пропускаем трек
+    const DELAY_IF_PLAYING_MS = 22000; // Если играет давно — начать на 15 сек позже
 
     let currentTrack = null;
     let nextTrack = null;
