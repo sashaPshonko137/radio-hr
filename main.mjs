@@ -204,46 +204,64 @@ function startNextTrack() {
         return;
     }
 
-    // Корректируем индекс
     currentTrackIndex = currentTrackIndex % audioFilesCache.length;
     const track = audioFilesCache[currentTrackIndex];
 
     console.log(`\n🎵 Начинаем трек: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
 
-    // Отправляем аудио
-    const readStream = fs.createReadStream(track.path);
-    readStream.pipe(icecastSocket, { end: false });
+    const fs = require('fs');
+    const fd = fs.openSync(track.path, 'r');
+    const chunkSize = 8192; // 8KB — стандартный размер чанка для потоков
+    const buffer = Buffer.alloc(chunkSize);
+    let bytesRead = 0;
 
-    readStream.on('error', (err) => {
-        console.error(`❌ Ошибка чтения ${track.name}:`, err.message);
-    });
+    // Скорость отправки: 128 kbps = ~16 KB/s
+    const delayBetweenChunks = (chunkSize / 16000) * 1000; // ~500 мс на 8KB
 
-    // 🕒 ЖДЁМ РОВНО СТОЛЬКО, СКОЛЬКО УКАЗАНО В МЕТАДАННЫХ
-    setTimeout(() => {
-        console.log(`⏹️  Трек завершён по времени: ${track.name}`);
+    function sendNextChunk() {
+        try {
+            bytesRead = fs.readSync(fd, buffer, 0, chunkSize, null);
 
-        // Удаляем временный трек
-        if (track.isDownloaded) {
-            try {
-                fs.unlinkSync(track.path);
-                console.log(`🗑️  Удалён: ${track.name}`);
-                audioFilesCache.splice(currentTrackIndex, 1);
-                // Не увеличиваем индекс — массив сдвинулся
-                if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
-                    currentTrackIndex = 0;
+            if (bytesRead > 0) {
+                const chunk = buffer.slice(0, bytesRead);
+                if (icecastSocket && icecastSocket.writable) {
+                    icecastSocket.write(chunk);
                 }
-            } catch (err) {
-                console.error('❌ Не удалось удалить:', err);
+                // Отправляем следующий чанк через задержку
+                setTimeout(sendNextChunk, delayBetweenChunks);
+            } else {
+                // Файл закончился
+                fs.closeSync(fd);
+                console.log(`⏹️  Трек завершён по чтению: ${track.name}`);
+                
+                // Удаляем временный трек
+                if (track.isDownloaded) {
+                    try {
+                        fs.unlinkSync(track.path);
+                        console.log(`🗑️  Удалён: ${track.name}`);
+                        audioFilesCache.splice(currentTrackIndex, 1);
+                        if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
+                            currentTrackIndex = 0;
+                        }
+                    } catch (err) {
+                        console.error('❌ Не удалось удалить:', err);
+                    }
+                } else {
+                    currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+                }
+
+                // Запускаем следующий трек
+                startNextTrack();
             }
-        } else {
-            // Просто переходим к следующему
-            currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+        } catch (err) {
+            console.error(`❌ Ошибка чтения ${track.name}:`, err.message);
+            fs.closeSync(fd);
+            startNextTrack();
         }
+    }
 
-        // ЗАПУСКАЕМ СЛЕДУЮЩИЙ ТРЕК
-        startNextTrack();
-
-    }, track.duration); // ⏱️ Ждём ровно столько, сколько в метаданных
+    // Запускаем отправку чанков
+    sendNextChunk();
 }
 
 // =============== ДОБАВЛЕНИЕ ТРЕКОВ ===============
