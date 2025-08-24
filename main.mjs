@@ -228,6 +228,7 @@ let isStreaming = false;
 let nextTrackTimeout = null;
 
 // Подключение к Icecast
+// Подключение к Icecast
 function connectToIcecast() {
     // Закрываем предыдущее соединение, если оно есть
     if (icecastSocket) {
@@ -264,37 +265,85 @@ function connectToIcecast() {
             icecastConnected = true;
             isStreaming = true;
             
-            // Если есть треки в очереди, начинаем воспроизведение
-            if (audioFilesCache.length > 0) {
-                playNextTrack();
-            }
+            // Отправляем трек ТОЛЬКО ПОСЛЕ УСПЕШНОЙ АУТЕНТИФИКАЦИИ
+            sendTrackToIcecast();
         } else if (response.includes('401 Unauthorized')) {
             console.error('❌ Ошибка аутентификации с Icecast. Проверьте пароль!');
             icecastConnected = false;
             isStreaming = false;
-            connectToIcecast()
+            
+            // ЗАКРЫВАЕМ СОЕДИНЕНИЕ ПРИ ОШИБКЕ
+            if (icecastSocket) {
+                icecastSocket.end();
+                icecastSocket = null;
+            }
         }
     });
     
-    // Обработка ошибок
-    icecastSocket.on('error', (err) => {
-        console.error(`❌ Ошибка соединения с Icecast: ${err.message}`);
-        icecastConnected = false;
-        isStreaming = false;
-        
-        connectToIcecast()
-    });
-    
-    // Обработка закрытия соединения
-    icecastSocket.on('close', () => {
-        console.log('⚠️ Соединение с Icecast закрыто');
-        icecastConnected = false;
-        isStreaming = false;
-        
-        connectToIcecast()
-    });
+    // УБЕРАЙТЕ ЭТИ ОБРАБОТЧИКИ - ОНИ ВЫЗЫВАЮТ БЕСКОНЕЧНЫЙ ЦИКЛ
+    // icecastSocket.on('error', ...) 
+    // icecastSocket.on('close', ...)
     
     return icecastSocket;
+}
+
+// Отправка трека в Icecast (вызывается ТОЛЬКО после успешной аутентификации)
+function sendTrackToIcecast() {
+    const track = audioFilesCache[currentTrackIndex];
+    const readStream = fs.createReadStream(track.path);
+    
+    readStream.pipe(icecastSocket, { end: false });
+    
+    readStream.on('end', () => {
+        console.log(`⏹️  Трек завершен: ${track.name}`);
+        
+        // ЗАКРЫВАЕМ СОЕДИНЕНИЕ С ICECAST
+        if (icecastSocket) {
+            icecastSocket.end();
+            icecastSocket = null;
+        }
+        
+        icecastConnected = false;
+        isStreaming = false;
+        
+        // Удаляем скачанный трек после воспроизведения
+        if (track.isDownloaded) {
+            console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
+            audioFilesCache.splice(currentTrackIndex, 1);
+            
+            if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
+                currentTrackIndex = 0;
+            }
+        } else {
+            currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+        }
+        
+        // ЗАПУСКАЕМ СЛЕДУЮЩИЙ ТРЕК
+        playNextTrack();
+    });
+    
+    readStream.on('error', (err) => {
+        console.error('❌ Ошибка отправки трека в Icecast:', err);
+        
+        // ЗАКРЫВАЕМ СОЕДИНЕНИЕ ПРИ ОШИБКЕ
+        if (icecastSocket) {
+            icecastSocket.end();
+            icecastSocket = null;
+        }
+        
+        icecastConnected = false;
+        isStreaming = false;
+        
+        // Пропускаем этот трек и переходим к следующему
+        if (track.isDownloaded) {
+            audioFilesCache.splice(currentTrackIndex, 1);
+        } else {
+            currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+        }
+        
+        // ЗАПУСКАЕМ СЛЕДУЮЩИЙ ТРЕК
+        playNextTrack();
+    });
 }
 
 async function addTrackToQueue(trackName) {
@@ -415,50 +464,14 @@ function playNextTrack() {
     console.log(`\n🌐 Сейчас играет: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
     console.log(`📊 В очереди: ${audioFilesCache.length} треков`);
     
-    // Подключаемся к Icecast, если еще не подключены
-    if (!icecastConnected) {
-        console.log('📡 Подключаемся к Icecast...');
-        connectToIcecast();
-        return;
+    // ЗАКРЫВАЕМ СТАРОЕ СОЕДИНЕНИЕ, ЕСЛИ ОНО ЕСТЬ
+    if (icecastSocket) {
+        icecastSocket.end();
+        icecastSocket = null;
     }
     
-    // Отправляем трек в Icecast
-    const readStream = fs.createReadStream(track.path);
-    
-    readStream.pipe(icecastSocket, { end: false });
-    
-    readStream.on('end', () => {
-        console.log(`⏹️  Трек завершен: ${track.name}`);
-        
-        // Удаляем скачанный трек после воспроизведения
-        if (track.isDownloaded) {
-            console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
-            audioFilesCache.splice(currentTrackIndex, 1);
-            
-            // Если очередь не пуста, следующий трек уже на месте удаленного
-            if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
-                currentTrackIndex = 0;
-            }
-        } else {
-            // Для статических треков увеличиваем индекс
-            currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-        }
-        
-        // 3-секундная пауза между треками
-        console.log('⏳ 3-секундная пауза между треками...');
-        nextTrackTimeout = setTimeout(playNextTrack, 3000);
-    });
-    
-    readStream.on('error', (err) => {
-        console.error('❌ Ошибка отправки трека в Icecast:', err);
-        // Пропускаем этот трек и переходим к следующему
-        if (track.isDownloaded) {
-            audioFilesCache.splice(currentTrackIndex, 1);
-        } else {
-            currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-        }
-        nextTrackTimeout = setTimeout(playNextTrack, 1000);
-    });
+    // ПОДКЛЮЧАЕМСЯ К ICECAST ТОЛЬКО КОГДА НУЖНО ОТПРАВИТЬ ТРЕК
+    connectToIcecast();
 }
 
 // Создаем сервер
