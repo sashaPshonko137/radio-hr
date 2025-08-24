@@ -460,7 +460,7 @@ function startGlobalTrackTimer() {
             console.log('⏳ 3-секундная пауза между треками...');
             setTimeout(() => {
                 playNextTrack();
-            }, 3000);
+            }, 7000);
 
         }, track.duration);
     }
