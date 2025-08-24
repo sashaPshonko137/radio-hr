@@ -271,32 +271,39 @@ function loadNextTrackToBuffer() {
 }
 
 function startByteStream() {
-    const startTime = Date.now();
-    let totalBytesSent = 0;
+    const CHUNK_SIZE_FAST = 800;  // 800 байт за 50 мс → 128 kbps
+    const SEND_INTERVAL = 50;     // Каждые 50 мс
 
     function sendNextChunk() {
         if (!isStreaming || !icecastConnected) return;
 
-        let chunk = null;
-        if (bufferPosition < audioBuffer.length) {
-            const end = Math.min(bufferPosition + CHUNK_SIZE, audioBuffer.length);
-            chunk = audioBuffer.slice(bufferPosition, end);
+        // 🔽 Подгружаем, если буфер заканчивается
+        if (audioBuffer.length - bufferPosition < CHUNK_SIZE_FAST * 10) {
+            loadNextTrackToBuffer();
+        }
+
+        // ✂️ Формируем чанк
+        if (bufferPosition >= audioBuffer.length) {
+            // Буфер пуст — отправляем тишину
+            const silence = Buffer.alloc(CHUNK_SIZE_FAST, 0);
+            if (icecastSocket && icecastSocket.writable) {
+                icecastSocket.write(silence);
+            }
+        } else {
+            const end = Math.min(bufferPosition + CHUNK_SIZE_FAST, audioBuffer.length);
+            const chunk = audioBuffer.slice(bufferPosition, end);
             bufferPosition += chunk.length;
-            totalBytesSent += chunk.length;
+
+            if (icecastSocket && icecastSocket.writable) {
+                icecastSocket.write(chunk);
+            }
         }
 
-        if (chunk && icecastSocket && icecastSocket.writable) {
-            icecastSocket.write(chunk);
-        }
-
-        // ⏱️ Отправляем с правильной скоростью
-        const expectedTime = (totalBytesSent / BYTES_PER_SECOND) * 1000;
-        const realTime = Date.now() - startTime;
-        const delay = Math.max(0, expectedTime - realTime);
-
-        setTimeout(sendNextChunk, delay);
+        // 🔁 Отправляем следующий чанк через 50 мс
+        setTimeout(sendNextChunk, SEND_INTERVAL);
     }
 
+    console.log('🔊 Быстрый поток запущен (128 kbps)');
     sendNextChunk();
 }
 
