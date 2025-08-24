@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 // В начале файла добавьте
 import os from 'os';
+import { setMaxListeners } from 'events';
 
 import { parseFile } from 'music-metadata';
 import { exec } from 'child_process';
@@ -12,6 +13,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'audio');
 const PORT = 8000;
 const CACHE_DIR = path.join(__dirname, 'cache');
+
+setMaxListeners(50); // или больше, если нужно
+
+// Увеличиваем лимит соединений
+server.maxConnections = 100; // или больше
 
 if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
