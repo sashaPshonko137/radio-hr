@@ -272,7 +272,7 @@ function connectToIcecast() {
             console.error('❌ Ошибка аутентификации с Icecast. Проверьте пароль!');
             icecastConnected = false;
             isStreaming = false;
-            setTimeout(connectToIcecast, 5000);
+            connectToIcecast()
         }
     });
     
@@ -282,8 +282,7 @@ function connectToIcecast() {
         icecastConnected = false;
         isStreaming = false;
         
-        // Повторная попытка через 5 секунд
-        setTimeout(connectToIcecast, 5000);
+        connectToIcecast()
     });
     
     // Обработка закрытия соединения
@@ -292,8 +291,7 @@ function connectToIcecast() {
         icecastConnected = false;
         isStreaming = false;
         
-        // Повторная попытка через 5 секунд
-        setTimeout(connectToIcecast, 5000);
+        connectToIcecast()
     });
     
     return icecastSocket;
