@@ -585,8 +585,9 @@ const server = http.createServer(async (req, res) => {
     }
 
      // Обслуживаем аудиопоток
+// Обслуживаем аудиопоток
 if (req.url === '/stream.mp3') {
-    console.log(`🎧 Новый клиент подключился`);
+    console.log(`🎧 Новый клиент подключился (всего: ${activeConnections.size + 1})`);
     
     res.writeHead(200, {
         'Content-Type': 'audio/mpeg',
@@ -594,6 +595,9 @@ if (req.url === '/stream.mp3') {
         'Connection': 'keep-alive',
         'Transfer-Encoding': 'chunked'
     });
+
+    // Добавляем соединение в активные
+    activeConnections.add(res);
     
     // Функция для отправки следующего трека
     const sendNextTrack = () => {
@@ -604,7 +608,7 @@ if (req.url === '/stream.mp3') {
         }
         
         const track = audioFilesCache[currentTrackIndex];
-        console.log(`🌐 Начинаем воспроизведение: ${track.name}`);
+        console.log(`🌐 Начинаем воспроизведение: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
         
         if (!fs.existsSync(track.path)) {
             console.error(`❌ Файл не существует: ${track.path}`);
@@ -626,6 +630,7 @@ if (req.url === '/stream.mp3') {
             
             // Удаляем скачанный трек из очереди
             if (track.isDownloaded) {
+                console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
                 audioFilesCache.splice(currentTrackIndex, 1);
                 if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
                     currentTrackIndex = 0;
@@ -649,8 +654,14 @@ if (req.url === '/stream.mp3') {
     
     sendNextTrack();
     
+    // Обработка отключения клиента
     req.on('close', () => {
         console.log('🎧 Клиент отключился');
+        activeConnections.delete(res);
+    });
+    
+    res.on('finish', () => {
+        activeConnections.delete(res);
     });
     
     return;
