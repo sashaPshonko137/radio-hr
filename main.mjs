@@ -408,7 +408,7 @@ function sendTrackFromPosition(res, track, positionMs) {
     readStream.on('end', () => {
         // Удаляем файл ТОЛЬКО если он был скачан (помечен isDownloaded)
         if (track.isDownloaded && track.path.includes(AUDIO_DIR)) {
-            setTimeout(() => safeDeleteFile(track.path), 1000);
+            // setTimeout(() => safeDeleteFile(track.path), 1000);
         }
     });
 
