@@ -587,8 +587,15 @@ const server = http.createServer(async (req, res) => {
      // Обслуживаем аудиопоток
 // Обслуживаем аудиопоток
 if (req.url === '/stream.mp3') {
+    if (audioFilesCache.length === 0) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Нет аудиофайлов');
+        return;
+    }
+
     console.log(`🎧 Новый клиент подключился (всего: ${activeConnections.size + 1})`);
-    
+    activeConnections.add(res);
+
     res.writeHead(200, {
         'Content-Type': 'audio/mpeg',
         'Cache-Control': 'no-cache',
@@ -596,74 +603,25 @@ if (req.url === '/stream.mp3') {
         'Transfer-Encoding': 'chunked'
     });
 
-    // Добавляем соединение в активные
-    activeConnections.add(res);
+    // Просто отправляем текущий трек из глобальной очереди
+    const currentTrack = audioFilesCache[currentTrackIndex];
     
-    // Функция для отправки следующего трека
-    const sendNextTrack = () => {
-        if (audioFilesCache.length === 0) {
-            console.log('⏸️  Очередь пуста, ждем треки...');
-            setTimeout(sendNextTrack, 1000);
-            return;
-        }
-        
-        const track = audioFilesCache[currentTrackIndex];
-        console.log(`🌐 Начинаем воспроизведение: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
-        
-        if (!fs.existsSync(track.path)) {
-            console.error(`❌ Файл не существует: ${track.path}`);
-            // Пропускаем этот трек
-            if (track.isDownloaded) {
-                audioFilesCache.splice(currentTrackIndex, 1);
-            } else {
-                currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-            }
-            sendNextTrack();
-            return;
-        }
-        
-        const readStream = fs.createReadStream(track.path);
-        readStream.pipe(res, { end: false });
-        
-        readStream.on('end', () => {
-            console.log(`⏹️  Трек завершен: ${track.name}`);
-            
-            // Удаляем скачанный трек из очереди
-            if (track.isDownloaded) {
-                console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
-                audioFilesCache.splice(currentTrackIndex, 1);
-                if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
-                    currentTrackIndex = 0;
-                }
-            } else {
-                // Для статических треков просто переходим к следующему
-                currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-            }
-            
-            // Небольшая пауза между треками
-            console.log('⏳ 3-секундная пауза между треками...');
-            setTimeout(sendNextTrack, 3000);
-        });
-        
-        readStream.on('error', (err) => {
-            console.error('❌ Ошибка отправки трека:', err);
-            // Попробуем следующий трек
-            setTimeout(sendNextTrack, 1000);
-        });
-    };
+    // Отправляем трек с текущей позиции
+    const elapsed = Date.now() - trackStartTime;
+    const positionMs = Math.min(elapsed, currentTrack.duration - 1000);
     
-    sendNextTrack();
-    
-    // Обработка отключения клиента
+    console.log(`🎧 Новый клиент. Позиция: ${Math.round(positionMs/1000)} из ${Math.round(currentTrack.duration/1000)} сек`);
+    sendTrackFromPosition(res, currentTrack, positionMs);
+
     req.on('close', () => {
         console.log('🎧 Клиент отключился');
         activeConnections.delete(res);
     });
-    
+
     res.on('finish', () => {
         activeConnections.delete(res);
     });
-    
+
     return;
 }
 
