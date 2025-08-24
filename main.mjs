@@ -10,8 +10,8 @@ import icecast from 'icecast';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'audio');
-const PORT = 8000;
-const ICECAST_PORT = 8001;
+const PORT = 8008;
+const ICECAST_PORT = 8000;
 const CACHE_DIR = path.join(__dirname, 'cache');
 
 setMaxListeners(50);
