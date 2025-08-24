@@ -14,6 +14,9 @@ const PORT = 8008;
 const ICECAST_PORT = 8000;
 const CACHE_DIR = path.join(__dirname, 'cache');
 
+let icecastSocket = null;  // Обратите внимание на регистр: Socket с заглавной S
+let icecastConnected = false;
+
 setMaxListeners(50);
 
 if (!fs.existsSync(CACHE_DIR)) {
