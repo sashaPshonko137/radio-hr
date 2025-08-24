@@ -252,12 +252,13 @@ function loadNextTrackToBuffer() {
 }
 
 function startByteStream() {
-    const startTime = Date.now();
+    let lastSendTime = Date.now();
+    let totalBytesSent = 0;
 
     function sendNextChunk() {
         if (!isStreaming || !icecastConnected) return;
 
-        // Подгружаем, если буфер заканчивается
+        // Подгружаем, если буфер почти пуст
         if (audioBuffer.length - bufferPosition < CHUNK_SIZE * 5) {
             loadNextTrackToBuffer();
         }
@@ -271,14 +272,21 @@ function startByteStream() {
             if (icecastSocket && icecastSocket.writable) {
                 icecastSocket.write(chunk);
             }
+
+            totalBytesSent += chunk.length;
         }
 
-        // Рассчитываем задержку
-        const expectedTime = (bufferPosition / BYTES_PER_SECOND) * 1000;
-        const realTime = Date.now() - startTime;
-        const delay = Math.max(0, expectedTime - realTime);
+        // ⏱️ Ключевое: НЕ ждём долго
+        // Отправляем следующий чанк через 20–50 мс
+        const now = Date.now();
+        const timeDiff = now - lastSendTime;
+        lastSendTime = now;
 
-        setTimeout(sendNextChunk, delay);
+        // Целевое время: 16000 байт/сек → 8192 байт за ~512 мс
+        // Но мы отправляем быстрее, чтобы не отставать
+        const idealDelay = Math.max(20, (chunk.length / BYTES_PER_SECOND) * 1000 - timeDiff);
+
+        setTimeout(sendNextChunk, idealDelay);
     }
 
     sendNextChunk();
