@@ -246,14 +246,8 @@ async function getAudioFilesWithDurations() {
     try {
         // Сканируем основную папку с аудио
         const audioFiles = await scanDirectory(AUDIO_DIR, false);
-        // Сканируем папку кэша
-        const cacheFiles = await scanDirectory(CACHE_DIR, true);
         
-        const allFiles = [...audioFiles, ...cacheFiles];
-        
-        console.log(`✅ Загружено ${allFiles.length} треков (${audioFiles.length} статических, ${cacheFiles.length} кэшированных)`);
-        
-        return allFiles;
+        return audioFiles;
     } catch (err) {
         console.error('Ошибка чтения папок с аудио:', err);
         return [];
@@ -288,14 +282,25 @@ async function addTrackToQueue(trackName) {
             return false;
         }
         
-        // Проверяем, не добавлен ли уже этот трек в очередь
-        const isDuplicate = audioFilesCache.some(track => 
+        // ГЕНЕРИРУЕМ ИМЯ КЭШ-ФАЙЛА ДЛЯ ЭТОГО URL
+        const cacheFileName = await getCacheFileName(videoUrl);
+        const cacheFilePath = path.join(CACHE_DIR, cacheFileName);
+        
+        // ПРОВЕРЯЕМ, НЕ ДОБАВЛЕН ЛИ УЖЕ ЭТОТ URL В ОЧЕРЕДЬ
+        const isDuplicateInQueue = audioFilesCache.some(track => 
             track.sourceUrl && track.sourceUrl === videoUrl
         );
         
-        if (isDuplicate) {
+        // ПРОВЕРЯЕМ, СУЩЕСТВУЕТ ЛИ УЖЕ ФАЙЛ В КЭШЕ
+        const isAlreadyCached = fs.existsSync(cacheFilePath);
+        
+        if (isDuplicateInQueue) {
             console.log(`⚠️  Трек с этим URL уже в очереди: ${videoUrl}`);
             return false;
+        }
+        
+        if (isAlreadyCached) {
+            console.log(`✅ Трек уже в кэше: ${cacheFilePath}`);
         }
         
         // Скачиваем трек (или используем кэш)
