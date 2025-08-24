@@ -17,7 +17,7 @@ const CACHE_DIR = path.join(__dirname, 'cache');
 setMaxListeners(50); // или больше, если нужно
 
 // Увеличиваем лимит соединений
-server.maxConnections = 100; // или больше
+
 
 if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -714,6 +714,7 @@ if (req.url === '/stream.mp3') {
         </script>
     `);
 });
+server.maxConnections = 100; // или больше
 
 // Запускаем сервер
 server.listen(PORT, '0.0.0.0', () => {
