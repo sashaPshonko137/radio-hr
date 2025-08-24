@@ -221,7 +221,6 @@ let isPlaying = false; // Добавлено для отслеживания с�
 let playNextTrackFunction = null;
 
 // В функцию addTrackToQueue добавьте:
-queueVersion++;
 console.log(`🔄 Версия очереди: ${queueVersion}, треков: ${audioFilesCache.length}`);
 
 // В функцию playNextTrack добавьте:
