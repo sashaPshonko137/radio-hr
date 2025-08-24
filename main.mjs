@@ -211,7 +211,7 @@ async function getAudioFilesWithDurations() {
 
 // Глобальное состояние для синхронизации
 let audioFilesCache = [];
-let currentTrackIndex = 0;
+let currentTrackIndex = -1; 
 let trackStartTime = Date.now();
 let activeConnections = new Set();
 
@@ -296,6 +296,7 @@ getAudioFilesWithDurations().then(files => {
     console.error('❌ Ошибка загрузки треков:', err);
 });
 
+
 // Глобальный таймер для смены треков
 function startGlobalTrackTimer() {
     if (audioFilesCache.length === 0) {
@@ -322,9 +323,11 @@ function startGlobalTrackTimer() {
             }
         });
 
-        setTimeout(playNextTrack, track.duration);
-        
-        currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+        // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: увеличиваем индекс ТОЛЬКО ПОСЛЕ завершения трека
+        setTimeout(() => {
+            currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+            playNextTrack();
+        }, track.duration);
     }
 
     console.log(`\n🚀 Начинаем воспроизведение`);
