@@ -152,6 +152,13 @@ function connectToIcecast() {
 
     let responseBuffer = '';
 
+    icecastSocket.on('data', (data) => {
+        if (data.includes('200 OK')) {
+            icecastConnected = true;
+            sendTrackToIcecast(); // ⏱️ Запускаем первый трек
+        }
+    });
+
     icecastSocket
         .on('connect', () => {
             console.log('✅ Соединение с Icecast установлено');
@@ -394,3 +401,31 @@ process.on('SIGINT', () => {
     if (icecastSocket) icecastSocket.destroy();
     process.exit(0);
 });
+
+// Отправка трека с ожиданием по длительности
+function sendTrackToIcecast() {
+    const track = audioFilesCache[currentTrackIndex];
+    
+    const readStream = fs.createReadStream(track.path);
+    readStream.pipe(icecastSocket, { end: false }); // 🔁 Не закрываем соединение
+
+    // 🕒 ЖДЁМ ПО ДЛИТЕЛЬНОСТИ, А НЕ ПО СОБЫТИЮ 'end'
+    setTimeout(() => {
+        console.log(`⏹️  Трек завершён по времени: ${track.name}`);
+        
+        // Удаляем скачанный трек
+        if (track.isDownloaded) {
+            fs.unlinkSync(track.path);
+            audioFilesCache.splice(currentTrackIndex, 1);
+            if (currentTrackIndex >= audioFilesCache.length) currentTrackIndex = 0;
+        } else {
+            currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+        }
+
+        // 🎵 ЗАПУСКАЕМ СЛЕДУЮЩИЙ ТРЕК
+        if (audioFilesCache.length > 0) {
+            sendTrackToIcecast();
+        }
+
+    }, track.duration);
+}
