@@ -271,39 +271,41 @@ function loadNextTrackToBuffer() {
 }
 
 function startByteStream() {
-    const CHUNK_SIZE_FAST = 800;  // 800 байт за 50 мс → 128 kbps
-    const SEND_INTERVAL = 50;     // Каждые 50 мс
+    const CHUNK_SIZE = 4096;        // 4 KB за чанк
+    const TARGET_BITRATE = 128000;   // 128 kbps
+    const BYTES_PER_SECOND = TARGET_BITRATE / 8; // 16000 байт/сек
+    const INTERVAL_MS = Math.round(CHUNK_SIZE / BYTES_PER_SECOND * 1000); // ~256 мс
+
+    console.log(`🔊 Поток: ${CHUNK_SIZE} байт каждые ${INTERVAL_MS} мс`);
 
     function sendNextChunk() {
         if (!isStreaming || !icecastConnected) return;
 
-        // 🔽 Подгружаем, если буфер заканчивается
-        if (audioBuffer.length - bufferPosition < CHUNK_SIZE_FAST * 10) {
+        // Если буфер почти пуст — подгружаем следующий трек
+        if (audioBuffer.length - bufferPosition < CHUNK_SIZE * 3) {
             loadNextTrackToBuffer();
         }
 
-        // ✂️ Формируем чанк
-        if (bufferPosition >= audioBuffer.length) {
-            // Буфер пуст — отправляем тишину
-            const silence = Buffer.alloc(CHUNK_SIZE_FAST, 0);
-            if (icecastSocket && icecastSocket.writable) {
-                icecastSocket.write(silence);
-            }
-        } else {
-            const end = Math.min(bufferPosition + CHUNK_SIZE_FAST, audioBuffer.length);
-            const chunk = audioBuffer.slice(bufferPosition, end);
+        // Формируем чанк
+        let chunk = null;
+        if (bufferPosition < audioBuffer.length) {
+            const end = Math.min(bufferPosition + CHUNK_SIZE, audioBuffer.length);
+            chunk = audioBuffer.slice(bufferPosition, end);
             bufferPosition += chunk.length;
-
-            if (icecastSocket && icecastSocket.writable) {
-                icecastSocket.write(chunk);
-            }
+        } else {
+            // Буфер пуст — отправляем тишину
+            chunk = Buffer.alloc(CHUNK_SIZE, 0);
         }
 
-        // 🔁 Отправляем следующий чанк через 50 мс
-        setTimeout(sendNextChunk, SEND_INTERVAL);
+        // Отправляем
+        if (icecastSocket && icecastSocket.writable && chunk.length > 0) {
+            icecastSocket.write(chunk);
+        }
+
+        // Отправляем следующий чанк через ~256 мс
+        setTimeout(sendNextChunk, INTERVAL_MS);
     }
 
-    console.log('🔊 Быстрый поток запущен (128 kbps)');
     sendNextChunk();
 }
 
