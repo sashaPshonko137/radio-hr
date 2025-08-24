@@ -244,7 +244,7 @@ function connectToIcecast() {
         // Отправляем заголовки аутентификации
         const headers = [
             `SOURCE /highrise-radio.mp3 HTTP/1.0`,
-            `Authorization: Basic ${Buffer.from('source:radio').toString('base64')}`,
+            `Authorization: Basic ${Buffer.from('source:hackme').toString('base64')}`,
             `Content-Type: audio/mpeg`,
             `User-Agent: HighriseRadio/1.0`,
             ``
