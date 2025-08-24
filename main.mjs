@@ -13,6 +13,7 @@ const PORT = 8008;
 const ICECAST_PORT = 8000;
 const CACHE_DIR = path.join(__dirname, 'cache');
 const ICECAST_PASSWORD = 'hackme';
+const SILENCE_CHUNK = Buffer.alloc(8192, 0);
 
 let icecastSocket = null;
 let icecastConnected = false;
@@ -186,7 +187,7 @@ function connectToIcecast() {
                     console.log('🎉 Успешная аутентификация');
                     icecastConnected = true;
                     isStreaming = true;
-                    startNextTrack(); // Запускаем первый трек
+                    startStream();
                 } else if (status.includes('401 Unauthorized')) {
                     console.error('❌ Неверный пароль!');
                     icecastConnected = false;
@@ -208,28 +209,22 @@ function connectToIcecast() {
         });
 }
 
-// =============== ОТПРАВКА ТРЕКА С ОЖИДАНИЕМ ПО ДЛИТЕЛЬНОСТИ ===============
-
-function startNextTrack() {
-    if (!isStreaming || !icecastConnected || audioFilesCache.length === 0) {
-        console.log('⏸️  Очередь пуста');
+function playCurrentTrack(callback) {
+    const track = audioFilesCache[currentTrackIndex];
+    if (!track) {
+        callback();
         return;
     }
 
-    // Начинаем с текущего индекса
-    currentTrackIndex = currentTrackIndex % audioFilesCache.length;
-    const track = audioFilesCache[currentTrackIndex];
-
-    console.log(`\n🎵 Начинаем трек: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
+    console.log(`🎵 Играем: ${track.name}`);
 
     let fd;
     try {
         fd = fs.openSync(track.path, 'r');
     } catch (err) {
         console.error(`❌ Не удалось открыть: ${track.path}`);
-        // Пропускаем трек, но НЕ разрываем поток
-        currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-        return startNextTrack(); // → следующий трек, без паузы
+        callback();
+        return;
     }
 
     const chunkSize = 8192;
@@ -238,10 +233,9 @@ function startNextTrack() {
     const startTime = Date.now();
     let totalBytesSent = 0;
 
-    function sendNextChunk() {
+    function sendChunk() {
         try {
             const bytesRead = fs.readSync(fd, buffer, 0, chunkSize, null);
-
             if (bytesRead > 0) {
                 const chunk = buffer.slice(0, bytesRead);
                 if (icecastSocket && icecastSocket.writable) {
@@ -249,49 +243,72 @@ function startNextTrack() {
                 }
 
                 totalBytesSent += bytesRead;
-
-                // ⏱️ Точный тайминг, как будто один непрерывный поток
                 const expectedTime = (totalBytesSent / bytesPerSecond) * 1000;
                 const realTime = Date.now() - startTime;
                 const delay = Math.max(0, expectedTime - realTime);
 
-                setTimeout(sendNextChunk, delay);
+                setTimeout(sendChunk, delay);
             } else {
-                // 🎵 Файл закончился — НЕТ ПАУЗЫ, сразу следующий
                 fs.closeSync(fd);
                 console.log(`⏹️  Трек завершён: ${track.name}`);
 
-                // Удаляем скачанный трек
+                // Удаляем временный трек
                 if (track.isDownloaded) {
                     try {
                         fs.unlinkSync(track.path);
-                        console.log(`🗑️  Удалён: ${track.name}`);
                         audioFilesCache.splice(currentTrackIndex, 1);
-                        if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
+                        if (currentTrackIndex >= audioFilesCache.length) {
                             currentTrackIndex = 0;
                         }
                     } catch (err) {
                         console.error('❌ Не удалось удалить:', err);
                     }
-                } else {
-                    currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
                 }
 
-                // 🔁 СРАЗУ запускаем следующий трек — БЕЗ ЗАДЕРЖКИ
-                startNextTrack(); // ⚡️ Не через setTimeout, а сразу
+                callback(); // → следующий трек
             }
         } catch (err) {
-            console.error(`❌ Ошибка чтения ${track.name}:`, err.message);
             if (fd) fs.closeSync(fd);
-
-            // 🔁 Пропускаем и идём дальше
-            currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-            startNextTrack();
+            callback();
         }
     }
 
-    // Запускаем отправку
-    sendNextChunk();
+    sendChunk();
+}
+
+// =============== ОТПРАВКА ТРЕКА С ОЖИДАНИЕМ ПО ДЛИТЕЛЬНОСТИ ===============
+
+function startStream() {
+    if (!icecastConnected) {
+        console.log('❌ Нет подключения к Icecast');
+        setTimeout(startStream, 1000);
+        return;
+    }
+
+    isStreaming = true;
+    console.log('🔊 Запущен постоянный поток');
+
+    // Бесконечный цикл отправки
+    function sendContinuousData() {
+        if (!isStreaming || !icecastConnected) return;
+
+        if (audioFilesCache.length > 0 && currentTrackIndex < audioFilesCache.length) {
+            // Есть трек — играем
+            playCurrentTrack(() => {
+                // После завершения — сразу следующий
+                currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+                sendContinuousData();
+            });
+        } else {
+            // Очередь пуста — отправляем тишину
+            if (icecastSocket && icecastSocket.writable) {
+                icecastSocket.write(SILENCE_CHUNK);
+            }
+            setTimeout(sendContinuousData, 500); // каждые 500 мс
+        }
+    }
+
+    sendContinuousData();
 }
 // =============== ДОБАВЛЕНИЕ ТРЕКОВ ===============
 
