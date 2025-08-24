@@ -210,65 +210,59 @@ function startStream() {
         return;
     }
 
-    let currentTrackIndex = 0;
-    let isSending = false;
+    let index = 0;
 
-    function playNextTrack() {
+    function play() {
         if (!isStreaming || !icecastConnected) return;
-        if (isSending) return;
 
-        if (currentTrackIndex >= audioFilesCache.length) {
+        // Защита от выхода за пределы
+        if (index >= audioFilesCache.length) {
             console.log('⏹️  Очередь закончилась');
             isStreaming = false;
             return;
         }
 
-        const track = audioFilesCache[currentTrackIndex];
-        console.log(`🎵 Начинаем: ${track.name}`);
+        const track = audioFilesCache[index];
+        console.log(`🎵 Начинаем трек ${index + 1}: ${track.name}`);
 
-        isSending = true;
         const readStream = fs.createReadStream(track.path, {
             highWaterMark: 8192
         });
 
-        readStream.on('data', (chunk) => {
-            if (icecastSocket && icecastSocket.writable) {
-                icecastSocket.write(chunk);
-            }
+        // Отправляем данные напрямую
+        readStream.pipe(icecastSocket, { end: false });
+
+        readStream.on('error', (err) => {
+            console.error(`❌ Ошибка чтения ${track.name}:`, err.message);
+            index++;
+            play(); // Следующий трек
         });
 
         readStream.on('end', () => {
             console.log(`⏹️  Трек завершён: ${track.name}`);
-            isSending = false;
 
             // Удаляем временный трек
             if (track.isDownloaded) {
                 try {
                     fs.unlinkSync(track.path);
-                    audioFilesCache.splice(currentTrackIndex, 1);
-                    if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
-                        currentTrackIndex = 0;
-                    }
-                    playNextTrack();
-                    return;
-                } catch (err) { }
+                    console.log(`🗑️  Удалён: ${track.name}`);
+                    audioFilesCache.splice(index, 1);
+                    // Не увеличиваем index — массив сдвинулся
+                } catch (err) {
+                    console.error('❌ Не удалось удалить:', err);
+                }
+            } else {
+                index++;
             }
 
-            currentTrackIndex++;
-            playNextTrack();
-        });
-
-        readStream.on('error', (err) => {
-            console.error(`❌ Ошибка чтения: ${track.path}`, err.message);
-            isSending = false;
-            currentTrackIndex++;
-            playNextTrack();
+            // Запускаем следующий трек
+            play();
         });
     }
 
-    playNextTrack();
+    // Запускаем первый трек
+    play();
 }
-
 // =============== ДОБАВЛЕНИЕ ТРЕКОВ ===============
 
 async function addTrackToQueue(trackName) {
