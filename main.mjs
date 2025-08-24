@@ -211,11 +211,12 @@ function startStream() {
     }
 
     let index = 0;
+    const CHUNK_SIZE = 8192;
+    const BYTES_PER_SECOND = 16000; // 128 kbps
+    let startTime = Date.now();
+    let totalBytesSent = 0;
 
-    function play() {
-        if (!isStreaming || !icecastConnected) return;
-
-        // Защита от выхода за пределы
+    function playNextTrack() {
         if (index >= audioFilesCache.length) {
             console.log('⏹️  Очередь закончилась');
             isStreaming = false;
@@ -223,45 +224,73 @@ function startStream() {
         }
 
         const track = audioFilesCache[index];
-        console.log(`🎵 Начинаем трек ${index + 1}: ${track.name}`);
+        console.log(`🎵 Начинаем трек: ${track.name}`);
 
-        const readStream = fs.createReadStream(track.path, {
-            highWaterMark: 8192
-        });
-
-        // Отправляем данные напрямую
-        readStream.pipe(icecastSocket, { end: false });
-
-        readStream.on('error', (err) => {
-            console.error(`❌ Ошибка чтения ${track.name}:`, err.message);
+        let fd;
+        try {
+            fd = fs.openSync(track.path, 'r');
+        } catch (err) {
+            console.error(`❌ Не удалось открыть: ${track.path}`);
             index++;
-            play(); // Следующий трек
-        });
+            playNextTrack();
+            return;
+        }
 
-        readStream.on('end', () => {
-            console.log(`⏹️  Трек завершён: ${track.name}`);
+        const buffer = Buffer.alloc(CHUNK_SIZE);
 
-            // Удаляем временный трек
-            if (track.isDownloaded) {
-                try {
-                    fs.unlinkSync(track.path);
-                    console.log(`🗑️  Удалён: ${track.name}`);
-                    audioFilesCache.splice(index, 1);
-                    // Не увеличиваем index — массив сдвинулся
-                } catch (err) {
-                    console.error('❌ Не удалось удалить:', err);
+        function sendChunk() {
+            try {
+                const bytesRead = fs.readSync(fd, buffer, 0, CHUNK_SIZE, null);
+
+                if (bytesRead > 0) {
+                    const chunk = buffer.slice(0, bytesRead);
+                    if (icecastSocket && icecastSocket.writable) {
+                        icecastSocket.write(chunk);
+                    }
+
+                    totalBytesSent += bytesRead;
+
+                    // Рассчитываем, когда должен быть отправлен этот объём
+                    const expectedTime = (totalBytesSent / BYTES_PER_SECOND) * 1000;
+                    const realTime = Date.now() - startTime;
+                    const delay = Math.max(0, expectedTime - realTime);
+
+                    setTimeout(sendChunk, delay);
+                } else {
+                    // Файл закончился
+                    fs.closeSync(fd);
+                    console.log(`⏹️  Трек завершён: ${track.name}`);
+
+                    // Удаляем временный трек
+                    if (track.isDownloaded) {
+                        try {
+                            fs.unlinkSync(track.path);
+                            audioFilesCache.splice(index, 1);
+                            if (index >= audioFilesCache.length && audioFilesCache.length > 0) {
+                                index = 0;
+                            }
+                        } catch (err) {
+                            console.error('❌ Не удалось удалить:', err);
+                        }
+                    } else {
+                        index++;
+                    }
+
+                    // Следующий трек
+                    playNextTrack();
                 }
-            } else {
+            } catch (err) {
+                console.error(`❌ Ошибка чтения: ${track.name}`, err.message);
+                fs.closeSync(fd);
                 index++;
+                playNextTrack();
             }
+        }
 
-            // Запускаем следующий трек
-            play();
-        });
+        sendChunk();
     }
 
-    // Запускаем первый трек
-    play();
+    playNextTrack();
 }
 // =============== ДОБАВЛЕНИЕ ТРЕКОВ ===============
 
