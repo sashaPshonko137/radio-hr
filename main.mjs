@@ -648,3 +648,18 @@ process.on('SIGINT', () => {
     
     process.exit(0);
 });
+
+getAudioFilesWithDurations().then(files => {
+    audioFilesCache = files;
+    console.log(`✅ Загружено ${files.length} статических треков`);
+    
+    // НЕМНОГО ПОДОЖДЕМ, ЧТОБЫ ICECAST ПОЛНОСТЬЮ ЗАГРУЗИЛСЯ
+    setTimeout(() => {
+        if (audioFilesCache.length > 0) {
+            console.log('\n🚀 Начинаем воспроизведение');
+            playNextTrack();
+        }
+    }, 1000);
+}).catch(err => {
+    console.error('❌ Ошибка загрузки треков:', err);
+});
