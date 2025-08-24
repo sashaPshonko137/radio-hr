@@ -216,25 +216,25 @@ function startNextTrack() {
         return;
     }
 
+    // Начинаем с текущего индекса
     currentTrackIndex = currentTrackIndex % audioFilesCache.length;
     const track = audioFilesCache[currentTrackIndex];
 
-    console.log(`\n🎵 Начинаем трек: ${track.name} (${Math.round(track.duration / 1000)} сек, ${track.bitrate / 1000} kbps)`);
+    console.log(`\n🎵 Начинаем трек: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
 
     let fd;
     try {
         fd = fs.openSync(track.path, 'r');
     } catch (err) {
         console.error(`❌ Не удалось открыть: ${track.path}`);
+        // Пропускаем трек, но НЕ разрываем поток
         currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-        startNextTrack();
-        return;
+        return startNextTrack(); // → следующий трек, без паузы
     }
 
     const chunkSize = 8192;
     const buffer = Buffer.alloc(chunkSize);
-
-    const bytesPerSecond = track.bitrate / 8; // байт в секунду
+    const bytesPerSecond = track.bitrate ? Math.round(track.bitrate / 8) : 16000;
     const startTime = Date.now();
     let totalBytesSent = 0;
 
@@ -244,29 +244,28 @@ function startNextTrack() {
 
             if (bytesRead > 0) {
                 const chunk = buffer.slice(0, bytesRead);
-
                 if (icecastSocket && icecastSocket.writable) {
                     icecastSocket.write(chunk);
                 }
 
                 totalBytesSent += bytesRead;
 
-                // Когда должен быть отправлен этот объём данных
-                const expectedTimeMs = (totalBytesSent / bytesPerSecond) * 1000;
-                const realTimeElapsed = Date.now() - startTime;
-                const delay = Math.max(0, expectedTimeMs - realTimeElapsed);
+                // ⏱️ Точный тайминг, как будто один непрерывный поток
+                const expectedTime = (totalBytesSent / bytesPerSecond) * 1000;
+                const realTime = Date.now() - startTime;
+                const delay = Math.max(0, expectedTime - realTime);
 
-                // Отправляем следующий чанк в нужное время
                 setTimeout(sendNextChunk, delay);
             } else {
-                // Файл закончился
+                // 🎵 Файл закончился — НЕТ ПАУЗЫ, сразу следующий
                 fs.closeSync(fd);
                 console.log(`⏹️  Трек завершён: ${track.name}`);
 
-                // Удаляем временный трек
+                // Удаляем скачанный трек
                 if (track.isDownloaded) {
                     try {
                         fs.unlinkSync(track.path);
+                        console.log(`🗑️  Удалён: ${track.name}`);
                         audioFilesCache.splice(currentTrackIndex, 1);
                         if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
                             currentTrackIndex = 0;
@@ -278,12 +277,15 @@ function startNextTrack() {
                     currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
                 }
 
-                // Запускаем следующий трек
-                startNextTrack();
+                // 🔁 СРАЗУ запускаем следующий трек — БЕЗ ЗАДЕРЖКИ
+                startNextTrack(); // ⚡️ Не через setTimeout, а сразу
             }
         } catch (err) {
             console.error(`❌ Ошибка чтения ${track.name}:`, err.message);
             if (fd) fs.closeSync(fd);
+
+            // 🔁 Пропускаем и идём дальше
+            currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
             startNextTrack();
         }
     }
@@ -291,7 +293,6 @@ function startNextTrack() {
     // Запускаем отправку
     sendNextChunk();
 }
-
 // =============== ДОБАВЛЕНИЕ ТРЕКОВ ===============
 
 async function addTrackToQueue(trackName) {
