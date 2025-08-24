@@ -3,7 +3,6 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
-import { setMaxListeners } from 'events';
 import { parseFile } from 'music-metadata';
 import { exec } from 'child_process';
 import { createConnection } from 'net';
@@ -13,27 +12,17 @@ const AUDIO_DIR = path.join(__dirname, 'audio');
 const PORT = 8008;
 const ICECAST_PORT = 8000;
 const CACHE_DIR = path.join(__dirname, 'cache');
+const ICECAST_PASSWORD = 'hackme'; // ЕДИНЫЙ ПАРОЛЬ
 
-let icecastSocket = null;  // Обратите внимание на регистр: Socket с заглавной S
+let icecastSocket = null;
 let icecastConnected = false;
-
-setMaxListeners(50);
+let audioFilesCache = [];
+let currentTrackIndex = 0;
+let isStreaming = false;
 
 if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
     console.log(`📁 Создана папка кэша: ${CACHE_DIR}`);
-}
-
-async function getCacheFileName(url) {
-    const videoIdMatch = url.match(/v=([a-zA-Z0-9_-]{11})/);
-    
-    if (videoIdMatch && videoIdMatch[1]) {
-        return `youtube_${videoIdMatch[1]}.mp3`;
-    }
-    
-    const crypto = await import('crypto');
-    const hash = crypto.createHash('md5').update(url).digest('hex');
-    return `track_${hash}.mp3`;
 }
 
 function getServerIP() {
@@ -49,6 +38,18 @@ function getServerIP() {
 }
 
 const SERVER_IP = getServerIP();
+
+async function getCacheFileName(url) {
+    const videoIdMatch = url.match(/v=([a-zA-Z0-9_-]{11})/);
+    
+    if (videoIdMatch && videoIdMatch[1]) {
+        return `youtube_${videoIdMatch[1]}.mp3`;
+    }
+    
+    const crypto = await import('crypto');
+    const hash = crypto.createHash('md5').update(url).digest('hex');
+    return `track_${hash}.mp3`;
+}
 
 async function checkYtDlp() {
     return new Promise((resolve) => {
@@ -73,7 +74,6 @@ async function checkYtDlp() {
     });
 }
 
-// Поиск трека на YouTube (без изменений)
 async function searchYouTube(trackName) {
     try {
         console.log(`🔍 Ищем трек: "${trackName}"`);
@@ -106,7 +106,6 @@ async function searchYouTube(trackName) {
     }
 }
 
-// Скачивание через yt-dlp (без изменений)
 async function downloadYouTubeTrack(videoUrl, trackName) {
     try {
         const cacheFileName = await getCacheFileName(videoUrl);
@@ -210,53 +209,82 @@ function extractUrlFromCacheName(filePath) {
     return null;
 }
 
-getAudioFilesWithDurations().then(files => {
-    audioFilesCache = files;
-    console.log(`✅ Загружено ${files.length} статических треков`);
-    
-    console.log('\n🎵 Порядок воспроизведения:');
-    audioFilesCache.forEach((track, index) => {
-        console.log(`${index + 1}. ${track.name} (${Math.round(track.duration / 1000)} сек)`);
-    });
-    
-    // УБРАЛИ ЭТУ СТРОКУ:
-    // connectToIcecast();
-    
-    // Запускаем воспроизведение, если есть треки
-    if (audioFilesCache.length > 0) {
-        console.log('\n🚀 Начинаем воспроизведение');
-        playNextTrack(); // ТЕПЕРЬ ПОДКЛЮЧЕНИЕ БУДЕТ ТОЛЬКО ОДНО
-    }
-}).catch(err => {
-    console.error('❌ Ошибка загрузки треков:', err);
-});
+async function getAudioFilesWithDurations() {
+    const staticFiles = await scanDirectory(AUDIO_DIR, false);
+    const cachedFiles = await scanDirectory(CACHE_DIR, true);
+    return [...staticFiles, ...cachedFiles];
+}
 
-// Глобальное состояние для очереди
-let audioFilesCache = [];
-let currentTrackIndex = 0;
-let icecastStream = null;
-let isStreaming = false;
-let nextTrackTimeout = null;
-
-// Подключение к Icecast
-// Подключение к Icecast
+// ПОЛНОСТЬЮ ПЕРЕРАБОТАННАЯ СИСТЕМА ПОТОКА
 function connectToIcecast() {
-    // Закрываем предыдущее соединение, если оно есть
     if (icecastSocket) {
         icecastSocket.destroy();
         icecastSocket = null;
     }
     
-    console.log(`📡 Пытаемся подключиться к Icecast: localhost:${ICECAST_PORT}`);
+    console.log(`📡 Подключаемся к Icecast: localhost:${ICECAST_PORT}`);
     
-    // Создаем TCP-соединение с Icecast
-    icecastSocket = createConnection(ICECAST_PORT, 'localhost', () => {
-        console.log('✅ Установлено соединение с Icecast');
+    icecastSocket = createConnection({
+        host: 'localhost',
+        port: ICECAST_PORT
+    });
+    
+    let icecastResponse = '';
+    
+    icecastSocket.on('data', (data) => {
+        icecastResponse += data.toString();
         
-        // Отправляем заголовки аутентификации
+        if (icecastResponse.includes('\r\n\r\n')) {
+            console.log(`📨 Ответ от Icecast: ${icecastResponse.split('\n')[0].trim()}`);
+            
+            if (icecastResponse.includes('200 OK')) {
+                console.log('🎉 Успешная аутентификация с Icecast');
+                icecastConnected = true;
+                isStreaming = true;
+                
+                // ЗАПУСКАЕМ ПОТОК ТОЛЬКО ПОСЛЕ УСПЕШНОЙ АУТЕНТИФИКАЦИИ
+                sendTrackToIcecast();
+            } 
+            else if (icecastResponse.includes('401 Unauthorized')) {
+                console.error('❌ Ошибка аутентификации: Неверный пароль!');
+                console.error('Проверьте пароль в коде и конфиге Icecast');
+                icecastConnected = false;
+                isStreaming = false;
+                icecastSocket.destroy();
+                
+                // Повторная попытка через 5 сек
+                setTimeout(connectToIcecast, 5000);
+            }
+        }
+    });
+    
+    icecastSocket.on('error', (err) => {
+        console.error(`❌ Ошибка подключения к Icecast: ${err.message}`);
+        icecastConnected = false;
+        isStreaming = false;
+        
+        // Переподключение при ошибке
+        setTimeout(connectToIcecast, 5000);
+    });
+    
+    icecastSocket.on('close', (hadError) => {
+        console.log(`🔌 Соединение с Icecast закрыто ${hadError ? '(с ошибкой)' : '(нормально)'}`);
+        icecastConnected = false;
+        isStreaming = false;
+        
+        // Если закрытие не было запланированным
+        if (!hadError && audioFilesCache.length > 0) {
+            setTimeout(connectToIcecast, 2000);
+        }
+    });
+    
+    // ОТПРАВЛЯЕМ АУТЕНТИФИКАЦИЮ ПОСЛЕ УСТАНОВЛЕНИЯ СОЕДИНЕНИЯ
+    icecastSocket.on('connect', () => {
+        console.log('✅ Соединение с Icecast установлено');
+        
         const headers = [
             `SOURCE /highrise-radio.mp3 HTTP/1.0`,
-            `Authorization: Basic ${Buffer.from('source:hackme').toString('base64')}`,
+            `Authorization: Basic ${Buffer.from(`source:${ICECAST_PASSWORD}`).toString('base64')}`,
             `Content-Type: audio/mpeg`,
             `User-Agent: HighriseRadio/1.0`,
             ``
@@ -265,95 +293,86 @@ function connectToIcecast() {
         icecastSocket.write(headers);
     });
     
-    // Обработка данных от Icecast
-    icecastSocket.on('data', (data) => {
-        const response = data.toString();
-        console.log(`📨 Ответ от Icecast: ${response.split('\n')[0]}`);
-        
-        // Проверяем успешное подключение
-        if (response.includes('200 OK')) {
-            console.log('🎉 Успешная аутентификация с Icecast');
-            icecastConnected = true;
-            isStreaming = true;
-            
-            // Отправляем трек ТОЛЬКО ПОСЛЕ УСПЕШНОЙ АУТЕНТИФИКАЦИИ
-            sendTrackToIcecast();
-        } else if (response.includes('401 Unauthorized')) {
-            console.error('❌ Ошибка аутентификации с Icecast. Проверьте пароль!');
-            icecastConnected = false;
-            isStreaming = false;
-            
-            // ЗАКРЫВАЕМ СОЕДИНЕНИЕ ПРИ ОШИБКЕ
-            if (icecastSocket) {
-                icecastSocket.end();
-                icecastSocket = null;
-            }
-        }
-    });
-    
-    // УБЕРАЙТЕ ЭТИ ОБРАБОТЧИКИ - ОНИ ВЫЗЫВАЮТ БЕСКОНЕЧНЫЙ ЦИКЛ
-    // icecastSocket.on('error', ...) 
-    // icecastSocket.on('close', ...)
-    
     return icecastSocket;
 }
 
-// Отправка трека в Icecast (вызывается ТОЛЬКО после успешной аутентификации)
+// КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: ОДНО СОЕДИНЕНИЕ НА ВСЮ ОЧЕРЕДЬ
 function sendTrackToIcecast() {
+    if (!audioFilesCache.length) {
+        console.log('⏸️  Очередь пуста, завершаем поток');
+        isStreaming = false;
+        
+        // ЗАКРЫВАЕМ СОЕДИНЕНИЕ ТОЛЬКО ПРИ ПУСТОЙ ОЧЕРЕДИ
+        if (icecastSocket) {
+            icecastSocket.end();
+            icecastSocket = null;
+        }
+        
+        return;
+    }
+    
+    // КОРРЕКТИРУЕМ ИНДЕКС
+    if (currentTrackIndex >= audioFilesCache.length) {
+        currentTrackIndex = 0;
+    }
+    
     const track = audioFilesCache[currentTrackIndex];
+    console.log(`\n🌐 Начинаем отправку трека: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
+    
     const readStream = fs.createReadStream(track.path);
     
+    // ПЕРЕДАЕМ ДАННЫЕ В ТО ЖЕ СОЕДИНЕНИЕ БЕЗ ЗАКРЫТИЯ
     readStream.pipe(icecastSocket, { end: false });
     
     readStream.on('end', () => {
         console.log(`⏹️  Трек завершен: ${track.name}`);
         
-        // ЗАКРЫВАЕМ СОЕДИНЕНИЕ С ICECAST
-        if (icecastSocket) {
-            icecastSocket.end();
-            icecastSocket = null;
-        }
-        
-        icecastConnected = false;
-        isStreaming = false;
-        
-        // Удаляем скачанный трек после воспроизведения
+        // УДАЛЯЕМ СКАЧАННЫЙ ТРЕК ПОСЛЕ ВОСПРОИЗВЕДЕНИЯ
         if (track.isDownloaded) {
-            console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
-            audioFilesCache.splice(currentTrackIndex, 1);
-            
-            if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
-                currentTrackIndex = 0;
+            try {
+                fs.unlinkSync(track.path);
+                console.log(`🗑️  Удален временный трек: ${track.name}`);
+                
+                // УДАЛЯЕМ ИЗ ОЧЕРЕДИ
+                audioFilesCache.splice(currentTrackIndex, 1);
+                
+                // КОРРЕКТИРУЕМ ИНДЕКС ПОСЛЕ УДАЛЕНИЯ
+                if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
+                    currentTrackIndex = 0;
+                }
+            } catch (err) {
+                console.error(`❌ Не удалось удалить ${track.path}:`, err);
             }
         } else {
+            // ПЕРЕХОДИМ К СЛЕДУЮЩЕМУ ТРЕКУ
             currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
         }
         
-        // ЗАПУСКАЕМ СЛЕДУЮЩИЙ ТРЕК
-        playNextTrack();
+        // ОТПРАВЛЯЕМ СЛЕДУЮЩИЙ ТРЕК В ТО ЖЕ СОЕДИНЕНИЕ
+        if (audioFilesCache.length > 0) {
+            console.log(`⏳ Ожидаем завершения текущего трека перед отправкой следующего...`);
+            setTimeout(sendTrackToIcecast, 100); // Небольшая пауза для синхронизации
+        } else {
+            isStreaming = false;
+        }
     });
     
     readStream.on('error', (err) => {
-        console.error('❌ Ошибка отправки трека в Icecast:', err);
+        console.error('❌ Ошибка чтения трека:', err);
         
-        // ЗАКРЫВАЕМ СОЕДИНЕНИЕ ПРИ ОШИБКЕ
-        if (icecastSocket) {
-            icecastSocket.end();
-            icecastSocket = null;
-        }
-        
-        icecastConnected = false;
-        isStreaming = false;
-        
-        // Пропускаем этот трек и переходим к следующему
+        // ПРОПУСКАЕМ ПРОБЛЕМНЫЙ ТРЕК
         if (track.isDownloaded) {
             audioFilesCache.splice(currentTrackIndex, 1);
         } else {
             currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
         }
         
-        // ЗАПУСКАЕМ СЛЕДУЮЩИЙ ТРЕК
-        playNextTrack();
+        // ПЕРЕХОДИМ К СЛЕДУЮЩЕМУ ТРЕКУ
+        if (audioFilesCache.length > 0) {
+            setTimeout(sendTrackToIcecast, 100);
+        } else {
+            isStreaming = false;
+        }
     });
 }
 
@@ -372,12 +391,11 @@ async function addTrackToQueue(trackName) {
             return false;
         }
         
-        // Проверяем, не добавлен ли уже этот URL в очередь
+        // Проверка на дубликаты
         const isDuplicateInQueue = audioFilesCache.some(track => 
             track.sourceUrl && track.sourceUrl === videoUrl
         );
         
-        // Проверяем, существует ли уже файл в кэше
         const cacheFileName = await getCacheFileName(videoUrl);
         const cacheFilePath = path.join(CACHE_DIR, cacheFileName);
         const isAlreadyCached = fs.existsSync(cacheFilePath);
@@ -387,10 +405,7 @@ async function addTrackToQueue(trackName) {
             return false;
         }
         
-        if (isAlreadyCached) {
-            console.log(`✅ Трек уже в кэше: ${cacheFilePath}`);
-        }
-        
+        // Скачиваем трек
         const filePath = await downloadYouTubeTrack(videoUrl, trackName);
         if (!filePath) {
             console.log('❌ Не удалось скачать трек');
@@ -414,23 +429,17 @@ async function addTrackToQueue(trackName) {
             sourceUrl: videoUrl
         };
         
-        // Добавляем в очередь
-        let insertIndex;
-        if (audioFilesCache.length === 0) {
-            insertIndex = 0;
-        } else {
-            insertIndex = (currentTrackIndex + 1) % (audioFilesCache.length + 1);
-        }
-        
+        // Добавляем в очередь ПОСЛЕ ТЕКУЩЕГО ТРЕКА
+        const insertIndex = (currentTrackIndex + 1) % (audioFilesCache.length + 1);
         audioFilesCache.splice(insertIndex, 0, newTrack);
         
         console.log(`✅ Трек добавлен в позицию ${insertIndex + 1}: ${newTrack.name}`);
         console.log(`🔗 Источник: ${videoUrl}`);
         
-        // Если сейчас ничего не играет, запускаем воспроизведение
+        // ЕСЛИ УЖЕ ИДЕТ ТРАНСЛЯЦИЯ - НОВЫЙ ТРЕК САМ ДОЖДЕТСЯ ОЧЕРЕДИ
         if (!isStreaming && audioFilesCache.length > 0) {
-            console.log('▶️ Немедленный запуск первого трека');
-            playNextTrack();
+            console.log('▶️ Запускаем поток');
+            connectToIcecast();
         }
         
         return true;
@@ -441,47 +450,14 @@ async function addTrackToQueue(trackName) {
     }
 }
 
-// Запускаем воспроизведение
-function playNextTrack() {
-    // Очищаем предыдущий таймаут
-    if (nextTrackTimeout) {
-        clearTimeout(nextTrackTimeout);
-        nextTrackTimeout = null;
-    }
-    
-    // Проверяем, есть ли треки в очереди
+// ФУНКЦИЯ ТОЛЬКО ДЛЯ ЗАПУСКА ПОТОКА
+function startStreaming() {
     if (audioFilesCache.length === 0) {
-        console.log('⏸️  Очередь пуста, ждем треки...');
-        isStreaming = false;
+        console.log('⏸️  Очередь пуста, нечего транслировать');
         return;
     }
     
-    // Корректируем индекс
-    if (currentTrackIndex < 0 || currentTrackIndex >= audioFilesCache.length) {
-        currentTrackIndex = 0;
-    }
-    
-    const track = audioFilesCache[currentTrackIndex];
-    
-    if (!track) {
-        console.error('❌ Трек не найден в позиции', currentTrackIndex);
-        currentTrackIndex = 0;
-        if (audioFilesCache.length > 0) {
-            setTimeout(playNextTrack, 1000);
-        }
-        return;
-    }
-    
-    console.log(`\n🌐 Сейчас играет: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
-    console.log(`📊 В очереди: ${audioFilesCache.length} треков`);
-    
-    // ЗАКРЫВАЕМ СТАРОЕ СОЕДИНЕНИЕ, ЕСЛИ ОНО ЕСТЬ
-    if (icecastSocket) {
-        icecastSocket.end();
-        icecastSocket = null;
-    }
-    
-    // ПОДКЛЮЧАЕМСЯ К ICECAST ТОЛЬКО КОГДА НУЖНО ОТПРАВИТЬ ТРЕК
+    console.log('\n🚀 Запускаем радио-поток');
     connectToIcecast();
 }
 
@@ -516,14 +492,13 @@ const server = http.createServer(async (req, res) => {
                 
                 res.end(JSON.stringify({ 
                     success: true, 
-                    message: 'Трек принят в обработку' 
+                    message: 'Трек добавлен в очередь' 
                 }));
                 
-                // Асинхронно обрабатываем добавление трека
+                // Асинхронная обработка
                 setTimeout(async () => {
                     try {
-                        const success = await addTrackToQueue(track);
-                        console.log(success ? '✅ Трек добавлен' : '❌ Ошибка добавления');
+                        await addTrackToQueue(track);
                     } catch (error) {
                         console.error('❌ Ошибка обработки трека:', error);
                     }
@@ -549,20 +524,15 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Обслуживаем аудиопоток - просто перенаправляем на Icecast
+    // Обслуживаем аудиопоток
     if (req.url === '/stream.mp3') {
         const icecastUrl = `http://${SERVER_IP}:${ICECAST_PORT}/highrise-radio.mp3`;
-        
-        console.log(`🎧 Перенаправляем клиента на Icecast: ${icecastUrl}`);
-        
-        // 302 редирект на Icecast
         res.writeHead(302, {
             'Location': icecastUrl,
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive'
         });
         res.end();
-        
         return;
     }
 
@@ -591,12 +561,13 @@ const server = http.createServer(async (req, res) => {
                 
                 const result = await response.json();
                 document.getElementById('status').textContent = result.message;
+                document.getElementById('trackInput').value = '';
             }
         </script>
     `);
 });
 
-// Загружаем статические треки и запускаем воспроизведение
+// ЗАГРУЖАЕМ ТРЕКИ И ЗАПУСКАЕМ ПОТОК
 getAudioFilesWithDurations().then(files => {
     audioFilesCache = files;
     console.log(`✅ Загружено ${files.length} статических треков`);
@@ -606,13 +577,11 @@ getAudioFilesWithDurations().then(files => {
         console.log(`${index + 1}. ${track.name} (${Math.round(track.duration / 1000)} сек)`);
     });
     
-    // Подключаемся к Icecast
-    // connectToIcecast();
-    
-    // Запускаем воспроизведение, если есть треки
+    // ЗАПУСКАЕМ ПОТОК ТОЛЬКО ЕСЛИ ЕСТЬ ТРЕКИ
     if (audioFilesCache.length > 0) {
-        console.log('\n🚀 Начинаем воспроизведение');
-        playNextTrack();
+        startStreaming();
+    } else {
+        console.log('\nℹ️  Папка audio пуста. Добавьте треки или используйте /add');
     }
 }).catch(err => {
     console.error('❌ Ошибка загрузки треков:', err);
@@ -632,34 +601,21 @@ server.listen(PORT, '0.0.0.0', () => {
 sudo apt update && sudo apt install icecast2 yt-dlp ffmpeg
 
 ℹ️ Настройте Icecast (файл /etc/icecast2/icecast.xml):
-- source-password: radio
+- source-password: ${ICECAST_PASSWORD}  // ДОЛЖЕН СОВПАДАТЬ С КОДОМ
 - Порт: ${ICECAST_PORT}
 - Mount point: /highrise-radio.mp3
+
+✅ Проверка Icecast: curl http://localhost:${ICECAST_PORT}/status.xsl
 `);
 });
 
 process.on('SIGINT', () => {
     console.log('\n🛑 Выключаем сервер...');
     
-    // Закрываем соединение с Icecast
-    if (icecastStream) {
-        icecastStream.end();
+    // ЗАКРЫВАЕМ СОЕДИНЕНИЕ С ICECAST
+    if (icecastSocket) {
+        icecastSocket.end();
     }
     
     process.exit(0);
-});
-
-getAudioFilesWithDurations().then(files => {
-    audioFilesCache = files;
-    console.log(`✅ Загружено ${files.length} статических треков`);
-    
-    // НЕМНОГО ПОДОЖДЕМ, ЧТОБЫ ICECAST ПОЛНОСТЬЮ ЗАГРУЗИЛСЯ
-    setTimeout(() => {
-        if (audioFilesCache.length > 0) {
-            console.log('\n🚀 Начинаем воспроизведение');
-            playNextTrack();
-        }
-    }, 1000);
-}).catch(err => {
-    console.error('❌ Ошибка загрузки треков:', err);
 });
