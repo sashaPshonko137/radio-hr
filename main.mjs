@@ -22,6 +22,26 @@ import { exec } from 'child_process';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'audio');
 const PORT = 8000;
+const CACHE_DIR = path.join(__dirname, 'cache');
+
+if (!fs.existsSync(CACHE_DIR)) {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    console.log(`📁 Создана папка кэша: ${CACHE_DIR}`);
+}
+
+async function getCacheFileName(url) {
+    // Извлекаем videoId из URL
+    const videoIdMatch = url.match(/v=([a-zA-Z0-9_-]{11})/);
+    
+    if (videoIdMatch && videoIdMatch[1]) {
+        return `youtube_${videoIdMatch[1]}.mp3`;
+    }
+    
+    // Если не удалось извлечь ID, используем хеш от URL
+    const crypto = await import('crypto');
+    const hash = crypto.createHash('md5').update(url).digest('hex');
+    return `track_${hash}.mp3`;
+}
 
 // Функция для получения IP-адреса сервера
 function getServerIP() {
@@ -126,56 +146,66 @@ async function searchYouTube(trackName) {
 
 // Скачивание через yt-dlp
 async function downloadYouTubeTrack(videoUrl, trackName) {
-    return new Promise((resolve, reject) => {
-        console.log(`📥 Скачиваем: ${videoUrl}`);
+    try {
+        // Генерируем имя файла на основе URL
+        const cacheFileName = await getCacheFileName(videoUrl);
+        const cacheFilePath = path.join(CACHE_DIR, cacheFileName);
         
-        const safeName = trackName.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 50);
-        const outputTemplate = path.join(AUDIO_DIR, `${safeName}.%(ext)s`);
+        // Проверяем, существует ли уже кэшированный файл
+        if (fs.existsSync(cacheFilePath)) {
+            console.log(`✅ Используем кэшированный трек: ${cacheFilePath}`);
+            return cacheFilePath;
+        }
+        
+        console.log(`📥 Скачиваем: ${videoUrl}`);
         
         // Проверяем где находится yt-dlp
         const ytDlpCommand = fs.existsSync(path.join(os.homedir(), 'yt-dlp')) ? 
             path.join(os.homedir(), 'yt-dlp') : 'yt-dlp';
         
-        // Команда для yt-dlp
-        const command = `${ytDlpCommand} -x --audio-format mp3 --audio-quality 0 -o "${outputTemplate}" "${videoUrl}"`;
+        // Команда для yt-dlp (сохраняем напрямую в кэш-папку)
+        const command = `${ytDlpCommand} -x --audio-format mp3 --audio-quality 0 -o "${cacheFilePath}" "${videoUrl}"`;
         
         console.log(`▶️  Выполняем: ${command}`);
         
-        exec(command, { timeout: 120000 }, (error, stdout, stderr) => {
-            if (error) {
-                console.error('❌ Ошибка скачивания:', error);
-                console.error('stderr:', stderr);
-                reject(error);
-                return;
-            }
-            
-            console.log('✅ Скачивание завершено');
-            
-            // Ищем скачанный файл
-            const files = fs.readdirSync(AUDIO_DIR);
-            const newFile = files.find(f => f.startsWith(safeName) && f.endsWith('.mp3'));
-            
-            if (newFile) {
-                const filePath = path.join(AUDIO_DIR, newFile);
-                console.log(`📁 Файл найден: ${filePath}`);
-                resolve(filePath);
-            } else {
-                console.error('❌ Скачанный файл не найден');
-                reject(new Error('Файл не найден'));
-            }
+        return new Promise((resolve, reject) => {
+            exec(command, { timeout: 120000 }, (error, stdout, stderr) => {
+                if (error) {
+                    console.error('❌ Ошибка скачивания:', error);
+                    console.error('stderr:', stderr);
+                    reject(error);
+                    return;
+                }
+                
+                console.log('✅ Скачивание завершено');
+                
+                // Проверяем, что файл создан
+                if (fs.existsSync(cacheFilePath)) {
+                    console.log(`📁 Файл сохранен в кэш: ${cacheFilePath}`);
+                    resolve(cacheFilePath);
+                } else {
+                    console.error('❌ Скачанный файл не найден');
+                    reject(new Error('Файл не найден'));
+                }
+            });
         });
-    });
+    } catch (error) {
+        console.error('❌ Ошибка подготовки к скачиванию:', error);
+        throw error;
+    }
 }
-// Получаем список аудиофайлов с точными длительностями
-// Получаем список аудиофайлов с точными длительностями
-async function getAudioFilesWithDurations() {
+async function scanDirectory(dir, isCached) {
     try {
-        const files = fs.readdirSync(AUDIO_DIR)
+        if (!fs.existsSync(dir)) {
+            return [];
+        }
+        
+        const files = fs.readdirSync(dir)
             .filter(file => {
                 const ext = path.extname(file).toLowerCase();
                 return ['.mp3', '.wav', '.ogg', '.m4a', '.flac'].includes(ext);
             })
-            .map(file => path.join(AUDIO_DIR, file));
+            .map(file => path.join(dir, file));
 
         const filesWithDurations = [];
         
@@ -188,7 +218,8 @@ async function getAudioFilesWithDurations() {
                     path: filePath,
                     duration: durationMs,
                     name: path.basename(filePath, path.extname(filePath)),
-                    isDownloaded: false // ЭТО ВАЖНО - статические файлы не удаляем!
+                    isDownloaded: isCached,
+                    sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
                 });
                 
             } catch (error) {
@@ -197,14 +228,45 @@ async function getAudioFilesWithDurations() {
                     path: filePath,
                     duration: 180000,
                     name: path.basename(filePath, path.extname(filePath)),
-                    isDownloaded: false // Статические файлы не удаляем
+                    isDownloaded: isCached,
+                    sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
                 });
             }
         }
         
         return filesWithDurations;
     } catch (err) {
-        console.error('Ошибка чтения папки audio:', err);
+        console.error(`Ошибка чтения папки ${dir}:`, err);
+        return [];
+    }
+}
+function extractUrlFromCacheName(filePath) {
+    const fileName = path.basename(filePath);
+    
+    // youtube_<videoId>.mp3
+    const youtubeMatch = fileName.match(/youtube_([a-zA-Z0-9_-]{11})\.mp3/);
+    if (youtubeMatch && youtubeMatch[1]) {
+        return `https://www.youtube.com/watch?v=${youtubeMatch[1]}`;
+    }
+    
+    return null;
+}
+// Получаем список аудиофайлов с точными длительностями
+// Получаем список аудиофайлов с точными длительностями
+async function getAudioFilesWithDurations() {
+    try {
+        // Сканируем основную папку с аудио
+        const audioFiles = await scanDirectory(AUDIO_DIR, false);
+        // Сканируем папку кэша
+        const cacheFiles = await scanDirectory(CACHE_DIR, true);
+        
+        const allFiles = [...audioFiles, ...cacheFiles];
+        
+        console.log(`✅ Загружено ${allFiles.length} треков (${audioFiles.length} статических, ${cacheFiles.length} кэшированных)`);
+        
+        return allFiles;
+    } catch (err) {
+        console.error('Ошибка чтения папок с аудио:', err);
         return [];
     }
 }
@@ -237,7 +299,17 @@ async function addTrackToQueue(trackName) {
             return false;
         }
         
-        // Скачиваем трек
+        // Проверяем, не добавлен ли уже этот трек в очередь
+        const isDuplicate = audioFilesCache.some(track => 
+            track.sourceUrl && track.sourceUrl === videoUrl
+        );
+        
+        if (isDuplicate) {
+            console.log(`⚠️  Трек с этим URL уже в очереди: ${videoUrl}`);
+            return false;
+        }
+        
+        // Скачиваем трек (или используем кэш)
         const filePath = await downloadYouTubeTrack(videoUrl, trackName);
         if (!filePath) {
             console.log('❌ Не удалось скачать трек');
@@ -257,13 +329,14 @@ async function addTrackToQueue(trackName) {
             path: filePath,
             duration: durationMs,
             name: path.basename(filePath, path.extname(filePath)),
-            isDownloaded: true
+            isDownloaded: true,
+            sourceUrl: videoUrl
         };
         
-        // ИСПРАВЛЕНИЕ: Правильное определение позиции
+        // Правильное определение позиции
         let insertIndex;
         if (audioFilesCache.length === 0) {
-            insertIndex = 0; // Первый трек всегда на позиции 0
+            insertIndex = 0;
         } else {
             insertIndex = (currentTrackIndex + 1) % (audioFilesCache.length + 1);
         }
@@ -271,8 +344,9 @@ async function addTrackToQueue(trackName) {
         audioFilesCache.splice(insertIndex, 0, newTrack);
         
         console.log(`✅ Трек добавлен в позицию ${insertIndex + 1}: ${newTrack.name}`);
+        console.log(`🔗 Источник: ${videoUrl}`);
         
-        // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Немедленный запуск, если очередь была пустой
+        // Немедленный запуск, если очередь была пустой
         if (audioFilesCache.length === 1 && playNextTrackFunction) {
             console.log('▶️ Немедленный запуск первого трека');
             if (nextTrackTimeout) {
@@ -405,13 +479,7 @@ function sendTrackFromPosition(res, track, positionMs) {
         readStream.pipe(res, { end: false });
     }
 
-    readStream.on('end', () => {
-        // Удаляем файл ТОЛЬКО если он был скачан (помечен isDownloaded)
-        if (track.isDownloaded && track.path.includes(AUDIO_DIR)) {
-            // setTimeout(() => safeDeleteFile(track.path), 1000);
-        }
-    });
-
+    // Убрали удаление файлов - теперь они сохраняются в кэш
     readStream.on('error', (err) => {
         console.error('❌ Ошибка отправки трека:', err);
         if (!res.finished) {
