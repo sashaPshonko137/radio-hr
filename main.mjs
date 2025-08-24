@@ -21,6 +21,26 @@ let audioFilesCache = [];
 let currentTrackIndex = 0;
 let isStreaming = false;
 
+let currentTrackBuffer = null;
+let nextTrackBuffer = null;
+let nextTrackInfo = null; // { path, duration, bitrate, name, isDownloaded }
+
+// После добавления трека или загрузки очереди — предзагрузи следующий
+async function preloadNextTrack() {
+    const nextIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+    if (audioFilesCache.length < 2) return;
+
+    const nextTrack = audioFilesCache[nextIndex];
+    try {
+        const data = await fs.promises.readFile(nextTrack.path);
+        nextTrackBuffer = data;
+        nextTrackInfo = { ...nextTrack };
+        console.log(`✅ Предзагружен следующий трек: ${nextTrack.name}`);
+    } catch (err) {
+        console.error(`❌ Не удалось предзагрузить: ${nextTrack.path}`);
+    }
+}
+
 if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
     console.log(`📁 Создана папка кэша: ${CACHE_DIR}`);
@@ -187,7 +207,7 @@ function connectToIcecast() {
                     console.log('🎉 Успешная аутентификация');
                     icecastConnected = true;
                     isStreaming = true;
-                    startStream();
+                    startNextTrack();
                 } else if (status.includes('401 Unauthorized')) {
                     console.error('❌ Неверный пароль!');
                     icecastConnected = false;
@@ -207,6 +227,100 @@ function connectToIcecast() {
             isStreaming = false;
             setTimeout(connectToIcecast, 2000);
         });
+}
+
+function startNextTrack() {
+    if (!isStreaming || !icecastConnected || audioFilesCache.length === 0) {
+        console.log('⏸️  Очередь пуста');
+        return;
+    }
+
+    // Корректируем индекс
+    currentTrackIndex = currentTrackIndex % audioFilesCache.length;
+
+    // Если есть предзагруженный — используем
+    if (nextTrackBuffer && nextTrackInfo) {
+        const buffer = nextTrackBuffer;
+        const track = nextTrackInfo;
+        nextTrackBuffer = null;
+        nextTrackInfo = null;
+
+        console.log(`🎵 Начинаем: ${track.name}`);
+        playFromBuffer(buffer, track, () => {
+            // Удаляем скачанный трек
+            if (track.isDownloaded) {
+                try {
+                    fs.unlinkSync(track.path);
+                    const idx = audioFilesCache.findIndex(t => t.path === track.path);
+                    if (idx !== -1) audioFilesCache.splice(idx, 1);
+                } catch (err) {}
+            }
+            // Запускаем следующий
+            startNextTrack();
+        });
+
+        // Предзагружаем следующий
+        setTimeout(preloadNextTrack, 100);
+        return;
+    }
+
+    // Иначе — читаем с диска
+    const track = audioFilesCache[currentTrackIndex];
+    console.log(`🎵 Начинаем: ${track.name}`);
+
+    fs.promises.readFile(track.path)
+        .then(buffer => {
+            playFromBuffer(buffer, track, () => {
+                if (track.isDownloaded) {
+                    try {
+                        fs.unlinkSync(track.path);
+                        audioFilesCache.splice(currentTrackIndex, 1);
+                        if (currentTrackIndex >= audioFilesCache.length) currentTrackIndex = 0;
+                    } catch (err) {}
+                } else {
+                    currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+                }
+                startNextTrack();
+            });
+        })
+        .catch(err => {
+            console.error(`❌ Ошибка: ${track.path}`, err.message);
+            currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+            startNextTrack();
+        });
+
+    // Предзагружаем следующий
+    setTimeout(preloadNextTrack, 100);
+}
+
+function playFromBuffer(buffer, track, callback) {
+    const chunkSize = 8192;
+    let offset = 0;
+    const bytesPerSecond = track.bitrate ? Math.round(track.bitrate / 8) : 16000;
+    const startTime = Date.now();
+
+    function sendChunk() {
+        if (offset >= buffer.length) {
+            console.log(`⏹️  Трек завершён: ${track.name}`);
+            callback();
+            return;
+        }
+
+        const chunk = buffer.slice(offset, offset + chunkSize);
+        offset += chunk.length;
+
+        if (icecastSocket && icecastSocket.writable) {
+            icecastSocket.write(chunk);
+        }
+
+        const expectedTime = (offset / bytesPerSecond) * 1000;
+        const realTime = Date.now() - startTime;
+        const delay = Math.max(0, expectedTime - realTime);
+
+        setTimeout(sendChunk, delay);
+    }
+
+    sendChunk();
 }
 
 function playCurrentTrack(callback) {
