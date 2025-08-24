@@ -210,15 +210,26 @@ function extractUrlFromCacheName(filePath) {
     return null;
 }
 
-async function getAudioFilesWithDurations() {
-    try {
-        const audioFiles = await scanDirectory(AUDIO_DIR, false);
-        return audioFiles;
-    } catch (err) {
-        console.error('Ошибка чтения папок с аудио:', err);
-        return [];
+getAudioFilesWithDurations().then(files => {
+    audioFilesCache = files;
+    console.log(`✅ Загружено ${files.length} статических треков`);
+    
+    console.log('\n🎵 Порядок воспроизведения:');
+    audioFilesCache.forEach((track, index) => {
+        console.log(`${index + 1}. ${track.name} (${Math.round(track.duration / 1000)} сек)`);
+    });
+    
+    // УБРАЛИ ЭТУ СТРОКУ:
+    // connectToIcecast();
+    
+    // Запускаем воспроизведение, если есть треки
+    if (audioFilesCache.length > 0) {
+        console.log('\n🚀 Начинаем воспроизведение');
+        playNextTrack(); // ТЕПЕРЬ ПОДКЛЮЧЕНИЕ БУДЕТ ТОЛЬКО ОДНО
     }
-}
+}).catch(err => {
+    console.error('❌ Ошибка загрузки треков:', err);
+});
 
 // Глобальное состояние для очереди
 let audioFilesCache = [];
@@ -596,7 +607,7 @@ getAudioFilesWithDurations().then(files => {
     });
     
     // Подключаемся к Icecast
-    connectToIcecast();
+    // connectToIcecast();
     
     // Запускаем воспроизведение, если есть треки
     if (audioFilesCache.length > 0) {
