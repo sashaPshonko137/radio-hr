@@ -252,43 +252,32 @@ function loadNextTrackToBuffer() {
 }
 
 function startByteStream() {
-    let lastSendTime = Date.now();
-    let totalBytesSent = 0;
-
     function sendNextChunk() {
         if (!isStreaming || !icecastConnected) return;
 
-        // Подгружаем, если буфер почти пуст
+        // Подгружаем следующий трек, если буфер почти пуст
         if (audioBuffer.length - bufferPosition < CHUNK_SIZE * 5) {
             loadNextTrackToBuffer();
         }
 
-        // Отправляем чанк
+        // Создаём чанк
+        let chunk = null;
         if (bufferPosition < audioBuffer.length) {
             const end = Math.min(bufferPosition + CHUNK_SIZE, audioBuffer.length);
-            const chunk = audioBuffer.slice(bufferPosition, end);
+            chunk = audioBuffer.slice(bufferPosition, end);
             bufferPosition += chunk.length;
-
-            if (icecastSocket && icecastSocket.writable) {
-                icecastSocket.write(chunk);
-            }
-
-            totalBytesSent += chunk.length;
         }
 
-        // ⏱️ Ключевое: НЕ ждём долго
-        // Отправляем следующий чанк через 20–50 мс
-        const now = Date.now();
-        const timeDiff = now - lastSendTime;
-        lastSendTime = now;
+        // Отправляем чанк, если он есть
+        if (chunk && icecastSocket && icecastSocket.writable) {
+            icecastSocket.write(chunk);
+        }
 
-        // Целевое время: 16000 байт/сек → 8192 байт за ~512 мс
-        // Но мы отправляем быстрее, чтобы не отставать
-        const idealDelay = Math.max(20, (chunk.length / BYTES_PER_SECOND) * 1000 - timeDiff);
-
-        setTimeout(sendNextChunk, idealDelay);
+        // Отправляем следующий чанк через 50 мс
+        setTimeout(sendNextChunk, 50);
     }
 
+    // Запускаем цикл
     sendNextChunk();
 }
 
