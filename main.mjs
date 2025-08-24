@@ -233,23 +233,29 @@ function connectToIcecast() {
             icecastStream = null;
         }
         
-        // Подключаемся к Icecast как источник
-        icecastStream = icecast.write(`http://localhost:${ICECAST_PORT}/highrise-radio.mp3`, {
-            user: 'source',
-            pass: 'radio', // Должно совпадать с настройками Icecast
+        // ПРАВИЛЬНЫЙ СПОСОБ ПОДКЛЮЧЕНИЯ К ICECAST
+        const mountPoint = '/highrise-radio.mp3';
+        const icecastUrl = `http://source:radio@localhost:${ICECAST_PORT}${mountPoint}`;
+        
+        console.log(`📡 Подключаемся к Icecast: ${icecastUrl.replace(/:radio@/, ':*****@')}`);
+        
+        // Создаем поток записи с правильными параметрами
+        icecastStream = icecast.createWriteStream(icecastUrl, {
             headers: {
-                'Content-Type': 'audio/mpeg'
+                'Content-Type': 'audio/mpeg',
+                'User-Agent': 'HighriseRadio/1.0'
             }
         });
         
         icecastStream.on('connect', () => {
-            console.log('✅ Подключено к Icecast');
+            console.log('✅ Успешно подключено к Icecast');
             isStreaming = true;
         });
         
         icecastStream.on('error', (err) => {
             console.error('❌ Ошибка подключения к Icecast:', err);
             isStreaming = false;
+            // Добавляем задержку перед повторной попыткой
             setTimeout(connectToIcecast, 5000);
         });
         
@@ -261,7 +267,7 @@ function connectToIcecast() {
         
         return icecastStream;
     } catch (error) {
-        console.error('❌ Ошибка инициализации Icecast:', error);
+        console.error('❌ Критическая ошибка инициализации Icecast:', error);
         isStreaming = false;
         setTimeout(connectToIcecast, 5000);
         return null;
