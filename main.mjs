@@ -104,24 +104,29 @@ async function scanDirectory(dir, isCached) {
         .filter(file => ['.mp3', '.wav', '.ogg', '.m4a', '.flac'].includes(path.extname(file).toLowerCase()))
         .map(file => path.join(dir, file))
         .map(async filePath => {
-            try {
-                const metadata = await parseFile(filePath);
-                return {
-                    path: filePath,
-                    duration: Math.round(metadata.format.duration * 1000) || 180000,
-                    name: path.basename(filePath, path.extname(filePath)),
-                    isDownloaded: isCached,
-                    sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
-                };
-            } catch (error) {
-                return {
-                    path: filePath,
-                    duration: 180000,
-                    name: path.basename(filePath, path.extname(filePath)),
-                    isDownloaded: isCached,
-                    sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
-                };
-            }
+try {
+    const metadata = await parseFile(filePath);
+    const duration = metadata.format.duration ? Math.round(metadata.format.duration * 1000) : 180000;
+    const bitrate = metadata.format.bitrate || 128000; // в битах в секунду
+
+    return {
+        path: filePath,
+        duration,
+        bitrate, // ← сохраняем
+        name: path.basename(filePath, path.extname(filePath)),
+        isDownloaded: isCached,
+        sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
+    };
+} catch (error) {
+    return {
+        path: filePath,
+        duration: 180000,
+        bitrate: 128000,
+        name: path.basename(filePath, path.extname(filePath)),
+        isDownloaded: isCached,
+        sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
+    };
+}
         });
 }
 
@@ -200,20 +205,20 @@ function connectToIcecast() {
 
 function startNextTrack() {
     if (!isStreaming || !icecastConnected || audioFilesCache.length === 0) {
-        console.log('⏸️  Очередь пуста или нет подключения');
+        console.log('⏸️  Очередь пуста');
         return;
     }
 
     currentTrackIndex = currentTrackIndex % audioFilesCache.length;
     const track = audioFilesCache[currentTrackIndex];
 
-    console.log(`\n🎵 Начинаем трек: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
+    console.log(`\n🎵 Начинаем трек: ${track.name} (${Math.round(track.duration / 1000)} сек, ${track.bitrate / 1000} kbps)`);
 
     let fd;
     try {
         fd = fs.openSync(track.path, 'r');
     } catch (err) {
-        console.error(`❌ Не удалось открыть: ${track.path}`, err.message);
+        console.error(`❌ Не удалось открыть: ${track.path}`);
         currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
         startNextTrack();
         return;
@@ -221,12 +226,10 @@ function startNextTrack() {
 
     const chunkSize = 8192;
     const buffer = Buffer.alloc(chunkSize);
-    
-    // Время начала отправки (в миллисекундах)
+
+    const bytesPerSecond = track.bitrate / 8; // байт в секунду
     const startTime = Date.now();
     let totalBytesSent = 0;
-    const bitrateKbps = 128; // Предполагаем 128 kbps
-    const bytesPerSecond = (bitrateKbps * 1000) / 8; // 16000 байт/сек
 
     function sendNextChunk() {
         try {
@@ -234,17 +237,17 @@ function startNextTrack() {
 
             if (bytesRead > 0) {
                 const chunk = buffer.slice(0, bytesRead);
-                
+
                 if (icecastSocket && icecastSocket.writable) {
                     icecastSocket.write(chunk);
                 }
 
                 totalBytesSent += bytesRead;
 
-                // Рассчитываем, когда должен быть отправлен следующий чанк
+                // Когда должен быть отправлен этот объём данных
                 const expectedTimeMs = (totalBytesSent / bytesPerSecond) * 1000;
-                const realElapsedTime = Date.now() - startTime;
-                const delay = Math.max(0, expectedTimeMs - realElapsedTime);
+                const realTimeElapsed = Date.now() - startTime;
+                const delay = Math.max(0, expectedTimeMs - realTimeElapsed);
 
                 // Отправляем следующий чанк в нужное время
                 setTimeout(sendNextChunk, delay);
@@ -257,7 +260,6 @@ function startNextTrack() {
                 if (track.isDownloaded) {
                     try {
                         fs.unlinkSync(track.path);
-                        console.log(`🗑️  Удалён: ${track.name}`);
                         audioFilesCache.splice(currentTrackIndex, 1);
                         if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
                             currentTrackIndex = 0;
