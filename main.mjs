@@ -238,54 +238,24 @@ function startStream() {
 
         const buffer = Buffer.alloc(CHUNK_SIZE);
 
-        function sendChunk() {
-            try {
-                const bytesRead = fs.readSync(fd, buffer, 0, CHUNK_SIZE, null);
+function sendChunk() {
+    if (bufferPosition < audioBuffer.length) {
+        const end = Math.min(bufferPosition + CHUNK_SIZE, audioBuffer.length);
+        const chunk = audioBuffer.slice(bufferPosition, end);
+        bufferPosition += chunk.length;
 
-                if (bytesRead > 0) {
-                    const chunk = buffer.slice(0, bytesRead);
-                    if (icecastSocket && icecastSocket.writable) {
-                        icecastSocket.write(chunk);
-                    }
-
-                    totalBytesSent += bytesRead;
-
-                    // Рассчитываем, когда должен быть отправлен этот объём
-                    const expectedTime = (totalBytesSent / BYTES_PER_SECOND) * 1000;
-                    const realTime = Date.now() - startTime;
-                    const delay = Math.max(0, expectedTime - realTime);
-
-                    setTimeout(sendChunk, delay);
-                } else {
-                    // Файл закончился
-                    fs.closeSync(fd);
-                    console.log(`⏹️  Трек завершён: ${track.name}`);
-
-                    // Удаляем временный трек
-                    if (track.isDownloaded) {
-                        try {
-                            fs.unlinkSync(track.path);
-                            audioFilesCache.splice(index, 1);
-                            if (index >= audioFilesCache.length && audioFilesCache.length > 0) {
-                                index = 0;
-                            }
-                        } catch (err) {
-                            console.error('❌ Не удалось удалить:', err);
-                        }
-                    } else {
-                        index++;
-                    }
-
-                    // Следующий трек
-                    playNextTrack();
-                }
-            } catch (err) {
-                console.error(`❌ Ошибка чтения: ${track.name}`, err.message);
-                fs.closeSync(fd);
-                index++;
-                playNextTrack();
-            }
+        if (icecastSocket && icecastSocket.writable) {
+            icecastSocket.write(chunk);
         }
+
+        // Рассчитываем задержку
+        const expectedTime = (totalBytesSent / BYTES_PER_SECOND) * 1000;
+        const realTime = Date.now() - startTime;
+        const delay = Math.max(0, expectedTime - realTime);
+
+        setTimeout(sendChunk, delay);
+    }
+}
 
         sendChunk();
     }
