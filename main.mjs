@@ -6,7 +6,7 @@ import os from 'os';
 import { setMaxListeners } from 'events';
 import { parseFile } from 'music-metadata';
 import { exec } from 'child_process';
-import icecast from 'icecast';
+import { createConnection } from 'net';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'audio');
