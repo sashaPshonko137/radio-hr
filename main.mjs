@@ -209,14 +209,24 @@ function startNextTrack() {
 
     console.log(`\n🎵 Начинаем трек: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
 
-    const fs = require('fs');
-    const fd = fs.openSync(track.path, 'r');
-    const chunkSize = 8192; // 8KB — стандартный размер чанка для потоков
+    let fd;
+    try {
+        fd = fs.openSync(track.path, 'r');
+    } catch (err) {
+        console.error(`❌ Не удалось открыть файл: ${track.path}`, err.message);
+        // Пропускаем трек
+        currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+        setTimeout(startNextTrack, 100);
+        return;
+    }
+
+    const chunkSize = 8192; // 8KB
     const buffer = Buffer.alloc(chunkSize);
     let bytesRead = 0;
 
-    // Скорость отправки: 128 kbps = ~16 KB/s
-    const delayBetweenChunks = (chunkSize / 16000) * 1000; // ~500 мс на 8KB
+    // Задержка между чанками: имитация 128 kbps потока
+    // 128 kbps = 16 KB/s → 8KB каждые ~500 мс
+    const delayBetweenChunks = 500;
 
     function sendNextChunk() {
         try {
@@ -230,10 +240,10 @@ function startNextTrack() {
                 // Отправляем следующий чанк через задержку
                 setTimeout(sendNextChunk, delayBetweenChunks);
             } else {
-                // Файл закончился
+                // Файл полностью прочитан
                 fs.closeSync(fd);
-                console.log(`⏹️  Трек завершён по чтению: ${track.name}`);
-                
+                console.log(`⏹️  Трек завершён: ${track.name}`);
+
                 // Удаляем временный трек
                 if (track.isDownloaded) {
                     try {
@@ -255,12 +265,12 @@ function startNextTrack() {
             }
         } catch (err) {
             console.error(`❌ Ошибка чтения ${track.name}:`, err.message);
-            fs.closeSync(fd);
+            if (fd) fs.closeSync(fd);
             startNextTrack();
         }
     }
 
-    // Запускаем отправку чанков
+    // Начинаем отправку чанков
     sendNextChunk();
 }
 
