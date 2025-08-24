@@ -9,7 +9,7 @@ const ICECAST_HOST = 'localhost';
 const ICECAST_PORT = 8000;
 const MOUNT_POINT = '/highrise-radio.mp3';
 const SOURCE_PASSWORD = 'hackme';
-const AUDIO_FILE_PATH = './test-audio.mp3'; // Укажите путь к вашему MP3 файлу
+const AUDIO_FILE_PATH = './audio/baby-shark.mp3'; // Укажите путь к вашему MP3 файлу
 // =====================
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
