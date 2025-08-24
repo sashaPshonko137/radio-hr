@@ -299,19 +299,29 @@ getAudioFilesWithDurations().then(files => {
 
 // Глобальный таймер для смены треков
 function startGlobalTrackTimer() {
-    if (audioFilesCache.length === 0) {
-        console.log('⏸️  Очередь пуста, ждем треки...');
-        return;
-    }
-
     function playNextTrack() {
+        // Проверяем, есть ли треки в очереди
         if (audioFilesCache.length === 0) {
             console.log('⏸️  Очередь пуста, ждем треки...');
             setTimeout(playNextTrack, 5000); // Проверяем каждые 5 секунд
             return;
         }
-
+        
+        // Убедимся, что currentTrackIndex в пределах массива
+        if (currentTrackIndex >= audioFilesCache.length) {
+            currentTrackIndex = 0;
+        }
+        
         const track = audioFilesCache[currentTrackIndex];
+        
+        // Дополнительная проверка на случай, если track всё же undefined
+        if (!track) {
+            console.error('❌ Трек не найден в позиции', currentTrackIndex);
+            currentTrackIndex = 0;
+            setTimeout(playNextTrack, 1000);
+            return;
+        }
+        
         trackStartTime = Date.now();
         
         console.log(`\n🌐 Сейчас играет: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
@@ -323,7 +333,7 @@ function startGlobalTrackTimer() {
             }
         });
 
-        // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: увеличиваем индекс ТОЛЬКО ПОСЛЕ завершения трека
+        // Увеличиваем индекс ТОЛЬКО ПОСЛЕ завершения трека
         setTimeout(() => {
             currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
             playNextTrack();
