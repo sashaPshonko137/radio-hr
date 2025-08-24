@@ -1,9 +1,0 @@
-<listen-socket>
-    <port>8001</port> <!-- Должен совпадать с ICECAST_PORT -->
-</listen-socket>
-
-<authentication>
-    <source-password>hackme</source-password> <!-- Должен совпадать с настройками в коде -->
-    <relay-password>hackme</relay-password>
-    <admin-password>hackme</admin-password>
-</authentication>
