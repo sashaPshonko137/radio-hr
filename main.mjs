@@ -236,7 +236,7 @@ function connectToIcecast() {
         // Подключаемся к Icecast как источник
         icecastStream = icecast.write(`http://localhost:${ICECAST_PORT}/highrise-radio.mp3`, {
             user: 'source',
-            pass: 'hackme', // Должно совпадать с настройками Icecast
+            pass: 'radio', // Должно совпадать с настройками Icecast
             headers: {
                 'Content-Type': 'audio/mpeg'
             }
@@ -583,7 +583,7 @@ server.listen(PORT, '0.0.0.0', () => {
 sudo apt update && sudo apt install icecast2 yt-dlp ffmpeg
 
 ℹ️ Настройте Icecast (файл /etc/icecast2/icecast.xml):
-- source-password: hackme
+- source-password: radio
 - Порт: ${ICECAST_PORT}
 - Mount point: /highrise-radio.mp3
 `);
