@@ -25,6 +25,12 @@ let currentTrackBuffer = null;
 let nextTrackBuffer = null;
 let nextTrackInfo = null; // { path, duration, bitrate, name, isDownloaded }
 
+let audioBuffer = Buffer.alloc(0);     // Общий буфер
+let bufferPosition = 0;                // Текущая позиция
+const CHUNK_SIZE = 8192;
+const TARGET_BITRATE = 128000; // 128 kbps
+const BYTES_PER_SECOND = TARGET_BITRATE / 8; // 16000 байт/сек
+
 // После добавления трека или загрузки очереди — предзагрузи следующий
 async function preloadNextTrack() {
     const nextIndex = (currentTrackIndex + 1) % audioFilesCache.length;
@@ -44,6 +50,92 @@ async function preloadNextTrack() {
 if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
     console.log(`📁 Создана папка кэша: ${CACHE_DIR}`);
+}
+
+async function appendToBuffer(track) {
+    try {
+        const data = await fs.promises.readFile(track.path);
+        const duration = track.duration || Math.round(data.length / (TARGET_BITRATE / 8) * 1000);
+
+        console.log(`📥 Добавлен в буфер: ${track.name} (${Math.round(duration / 1000)} сек)`);
+
+        // Сохраняем метаданные (если нужно)
+        track.bufferStart = audioBuffer.length;
+        track.bufferEnd = audioBuffer.length + data.length;
+        track.playTime = Date.now() + (audioBuffer.length / BYTES_PER_SECOND) * 1000;
+
+        // Добавляем в общий буфер
+        const newBuffer = Buffer.alloc(audioBuffer.length + data.length);
+        audioBuffer.copy(newBuffer);
+        data.copy(newBuffer, audioBuffer.length);
+        audioBuffer = newBuffer;
+
+        // Удаляем временный трек
+        if (track.isDownloaded) {
+            setTimeout(() => {
+                try {
+                    fs.unlinkSync(track.path);
+                } catch (err) {}
+            }, 1000);
+        }
+
+    } catch (err) {
+        console.error(`❌ Не удалось добавить в буфер: ${track.path}`);
+    }
+}
+
+function startByteStream() {
+    if (!isStreaming || !icecastConnected) return;
+
+    const startTime = Date.now();
+
+    function sendNextChunk() {
+        if (!isStreaming || !icecastConnected) return;
+
+        // Если буфер почти пуст — подгружаем следующий трек
+        if (audioBuffer.length - bufferPosition < CHUNK_SIZE * 10) {
+            loadNextTrackToBuffer();
+        }
+
+        // Отправляем чанк
+        if (bufferPosition < audioBuffer.length) {
+            const end = Math.min(bufferPosition + CHUNK_SIZE, audioBuffer.length);
+            const chunk = audioBuffer.slice(bufferPosition, end);
+            bufferPosition += chunk.length;
+
+            if (icecastSocket && icecastSocket.writable) {
+                icecastSocket.write(chunk);
+            }
+        } else {
+            // Буфер пуст — отправляем тишину
+            const silence = Buffer.alloc(CHUNK_SIZE, 0);
+            if (icecastSocket && icecastSocket.writable) {
+                icecastSocket.write(silence);
+            }
+        }
+
+        // Рассчитываем задержку для 128 kbps
+        const expectedTime = (bufferPosition / BYTES_PER_SECOND) * 1000;
+        const realTime = Date.now() - startTime;
+        const delay = Math.max(0, expectedTime - realTime);
+
+        setTimeout(sendNextChunk, delay);
+    }
+
+    sendNextChunk();
+}
+
+function loadNextTrackToBuffer() {
+    if (audioFilesCache.length === 0) return;
+
+    // Находим трек, который ещё не в буфере
+    const nextTrack = audioFilesCache.find(track => {
+        return !track.bufferStart || track.bufferStart >= bufferPosition;
+    });
+
+    if (nextTrack) {
+        appendToBuffer(nextTrack);
+    }
 }
 
 function getServerIP() {
@@ -203,12 +295,19 @@ function connectToIcecast() {
             if (responseBuffer.includes('\r\n\r\n')) {
                 const status = responseBuffer.split('\n')[0].trim();
                 console.log(`📨 Ответ от Icecast: ${status}`);
-                if (status.includes('200 OK')) {
-                    console.log('🎉 Успешная аутентификация');
-                    icecastConnected = true;
-                    isStreaming = true;
-                    startNextTrack();
-                } else if (status.includes('401 Unauthorized')) {
+               if (status.includes('200 OK')) {
+    console.log('🎉 Успешная аутентификация');
+    icecastConnected = true;
+    isStreaming = true;
+
+    // Начинаем с первого трека
+    if (audioFilesCache.length > 0) {
+        appendToBuffer(audioFilesCache[0]).then(() => {
+            setTimeout(loadNextTrackToBuffer, 100); // Подгружаем следующие
+            startByteStream(); // Запускаем поток байтов
+        });
+    }
+} else if (status.includes('401 Unauthorized')) {
                     console.error('❌ Неверный пароль!');
                     icecastConnected = false;
                     setTimeout(connectToIcecast, 5000);
@@ -461,18 +560,20 @@ async function addTrackToQueue(trackName) {
             sourceUrl: videoUrl
         };
 
-        // Вставляем после текущего трека
-        const insertIndex = (currentTrackIndex + 1) % (audioFilesCache.length + 1);
-        audioFilesCache.splice(insertIndex, 0, newTrack);
+         audioFilesCache.splice(insertIndex, 0, newTrack);
 
-        console.log(`✅ Трек добавлен в позицию ${insertIndex + 1}: ${newTrack.name}`);
-        console.log(`📊 Длительность: ${Math.round(duration / 1000)} сек, Битрейт: ${bitrate / 1000} kbps`);
-
-        // Если поток не запущен — начинаем
-        if (!isStreaming && audioFilesCache.length > 0) {
-            console.log('▶️ Запускаем поток');
-            connectToIcecast();
+    // Сразу добавляем в буфер, если есть место
+    if (isStreaming) {
+        const bufferSpaceLeft = audioBuffer.length - bufferPosition;
+        if (bufferSpaceLeft < CHUNK_SIZE * 20) {
+            appendToBuffer(newTrack);
         }
+    }
+
+    // Если не запущено — запускаем
+    if (!isStreaming && audioFilesCache.length > 0) {
+        connectToIcecast();
+    }
 
         return true;
     } catch (error) {
