@@ -5,17 +5,6 @@ import { fileURLToPath } from 'url';
 // В начале файла добавьте
 import os from 'os';
 
-// Проверяем доступность yt-dlp при старте
-async function initialize() {
-    const hasYtDlp = await checkYtDlp();
-    if (!hasYtDlp) {
-        console.log('💡 Для скачивания треков выполните:');
-        console.log('wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O ~/yt-dlp');
-        console.log('chmod +x ~/yt-dlp');
-    }
-    
-    // ... остальная инициализация
-}
 import { parseFile } from 'music-metadata';
 import { exec } from 'child_process';
 
@@ -428,8 +417,31 @@ function startGlobalTrackTimer() {
 
         // Увеличиваем индекс ПОСЛЕ завершения трека
         nextTrackTimeout = setTimeout(() => {
-            currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-            playNextTrack();
+            // ДОБАВЛЕНО: Удаляем скачанный трек после воспроизведения
+            if (track.isDownloaded) {
+                console.log(`🗑️  Удаляем временный трек из очереди: ${track.name}`);
+                audioFilesCache.splice(currentTrackIndex, 1);
+                
+                // Корректируем индекс, если удалили трек
+                if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
+                    currentTrackIndex = 0;
+                }
+            } else {
+                // Просто переходим к следующему треку
+                currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+            }
+            
+            // ДОБАВЛЕНО: Проверка на пустую очередь после удаления
+            if (audioFilesCache.length === 0) {
+                console.log('⏸️  Очередь опустела после удаления трека');
+                return;
+            }
+            
+            // ДОБАВЛЕНО: 3-секундная пауза перед следующим треком
+            console.log('⏳ 3-секундная пауза между треками...');
+            setTimeout(() => {
+                playNextTrack();
+            }, 3000);
         }, track.duration);
     }
 
@@ -479,7 +491,16 @@ function sendTrackFromPosition(res, track, positionMs) {
         readStream.pipe(res, { end: false });
     }
 
-    // Убрали удаление файлов - теперь они сохраняются в кэш
+    readStream.on('end', () => {
+        // Убрали удаление файлов - теперь они сохраняются в кэш
+        // Но добавляем паузу для клиентов
+        if (!res.finished) {
+            // Отправляем небольшой тишинный пакет для плавного перехода
+            const silence = Buffer.alloc(16000, 0);
+            res.write(silence);
+        }
+    });
+
     readStream.on('error', (err) => {
         console.error('❌ Ошибка отправки трека:', err);
         if (!res.finished) {
