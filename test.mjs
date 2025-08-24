@@ -232,10 +232,10 @@ function startAudioStream() {
             console.log(`📊 Итого: ${chunksSent} чанков, ${bytesSent} байт`);
             
             // Завершаем соединение
-            if (icecastSocket && icecastSocket.writable) {
-                console.log('🔌 Закрываем соединение с Icecast...');
-                icecastSocket.end();
-            }
+            // if (icecastSocket && icecastSocket.writable) {
+            //     console.log('🔌 Закрываем соединение с Icecast...');
+            //     icecastSocket.end();
+            // }
         })
         .on('error', (err) => {
             console.error('❌ Ошибка чтения аудиофайла:', err.message);
