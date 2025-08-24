@@ -100,33 +100,40 @@ async function downloadYouTubeTrack(videoUrl) {
 
 async function scanDirectory(dir, isCached) {
     if (!fs.existsSync(dir)) return [];
+    
     return (await fs.promises.readdir(dir))
         .filter(file => ['.mp3', '.wav', '.ogg', '.m4a', '.flac'].includes(path.extname(file).toLowerCase()))
         .map(file => path.join(dir, file))
         .map(async filePath => {
-try {
-    const metadata = await parseFile(filePath);
-    const duration = metadata.format.duration ? Math.round(metadata.format.duration * 1000) : 180000;
-    const bitrate = metadata.format.bitrate || 128000; // в битах в секунду
+            try {
+                const metadata = await parseFile(filePath);
+                const duration = metadata.format.duration 
+                    ? Math.round(metadata.format.duration * 1000) 
+                    : 180000;
+                
+                const bitrate = metadata.format.bitrate 
+                    ? Math.round(metadata.format.bitrate) 
+                    : 128000;
 
-    return {
-        path: filePath,
-        duration,
-        bitrate, // ← сохраняем
-        name: path.basename(filePath, path.extname(filePath)),
-        isDownloaded: isCached,
-        sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
-    };
-} catch (error) {
-    return {
-        path: filePath,
-        duration: 180000,
-        bitrate: 128000,
-        name: path.basename(filePath, path.extname(filePath)),
-        isDownloaded: isCached,
-        sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
-    };
-}
+                return {
+                    path: filePath,
+                    duration,
+                    bitrate,
+                    name: path.basename(filePath, path.extname(filePath)),
+                    isDownloaded: isCached,
+                    sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
+                };
+            } catch (error) {
+                console.error(`❌ Ошибка метаданных ${filePath}:`, error.message);
+                return {
+                    path: filePath,
+                    duration: 180000,
+                    bitrate: 128000,
+                    name: path.basename(filePath, path.extname(filePath)),
+                    isDownloaded: isCached,
+                    sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
+                };
+            }
         });
 }
 
@@ -294,6 +301,7 @@ async function addTrackToQueue(trackName) {
     const videoUrl = await searchYouTube(trackName);
     if (!videoUrl) return false;
 
+    // Проверка дубликатов
     if (audioFilesCache.some(t => t.sourceUrl === videoUrl)) {
         console.log('⚠️  Уже в очереди:', videoUrl);
         return false;
@@ -302,21 +310,33 @@ async function addTrackToQueue(trackName) {
     try {
         const filePath = await downloadYouTubeTrack(videoUrl);
         const metadata = await parseFile(filePath);
-        const duration = metadata.format.duration ? Math.round(metadata.format.duration * 1000) : 180000;
+
+        // Читаем длительность и битрейт
+        const duration = metadata.format.duration 
+            ? Math.round(metadata.format.duration * 1000) 
+            : 180000; // 3 минуты по умолчанию
+
+        const bitrate = metadata.format.bitrate 
+            ? Math.round(metadata.format.bitrate) 
+            : 128000; // 128 kbps по умолчанию
 
         const newTrack = {
             path: filePath,
             duration,
+            bitrate, // 🔥 Добавляем битрейт
             name: path.basename(filePath, path.extname(filePath)),
             isDownloaded: true,
             sourceUrl: videoUrl
         };
 
+        // Вставляем после текущего трека
         const insertIndex = (currentTrackIndex + 1) % (audioFilesCache.length + 1);
         audioFilesCache.splice(insertIndex, 0, newTrack);
 
         console.log(`✅ Трек добавлен в позицию ${insertIndex + 1}: ${newTrack.name}`);
+        console.log(`📊 Длительность: ${Math.round(duration / 1000)} сек, Битрейт: ${bitrate / 1000} kbps`);
 
+        // Если поток не запущен — начинаем
         if (!isStreaming && audioFilesCache.length > 0) {
             console.log('▶️ Запускаем поток');
             connectToIcecast();
@@ -324,7 +344,7 @@ async function addTrackToQueue(trackName) {
 
         return true;
     } catch (error) {
-        console.error('❌ Ошибка добавления:', error);
+        console.error('❌ Ошибка добавления трека:', error);
         return false;
     }
 }
