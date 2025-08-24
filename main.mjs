@@ -207,15 +207,14 @@ function connectToIcecast() {
                 const status = responseBuffer.split('\n')[0].trim();
                 console.log(`📨 Ответ от Icecast: ${status}`);
                 if (status.includes('200 OK')) {
-                    console.log('🎉 Успешная аутентификация');
-                    icecastConnected = true;
-                    isStreaming = true;
+    console.log('🎉 Успешная аутентификация');
+    icecastConnected = true;
+    isStreaming = true;
 
-                    if (audioFilesCache.length > 0) {
-                        await preloadAllTracks(); // 🔥 Предзагружаем всё
-                        startByteStream();        // Запускаем поток
-                    }
-                } else if (status.includes('401 Unauthorized')) {
+    if (audioFilesCache.length > 0) {
+        startStream(); // ✅ Запускаем поток
+    }
+}else if (status.includes('401 Unauthorized')) {
                     console.error('❌ Неверный пароль!');
                     setTimeout(connectToIcecast, 5000);
                 }
@@ -232,7 +231,70 @@ function connectToIcecast() {
 }
 
 // =============== ОСНОВНОЙ ПОТОК БАЙТОВ ===============
+function startStream() {
+    if (!isStreaming || !icecastConnected || audioFilesCache.length === 0) {
+        console.log('⏸️  Очередь пуста');
+        return;
+    }
 
+    let currentTrackIndex = 0;
+    let isSending = false;
+
+    function playNextTrack() {
+        if (!isStreaming || !icecastConnected) return;
+        if (isSending) return; // Защита от дублирования
+
+        if (currentTrackIndex >= audioFilesCache.length) {
+            console.log('⏹️  Очередь закончилась');
+            isStreaming = false;
+            return;
+        }
+
+        const track = audioFilesCache[currentTrackIndex];
+        console.log(`🎵 Начинаем: ${track.name}`);
+
+        isSending = true;
+        const readStream = fs.createReadStream(track.path, {
+            highWaterMark: 8192
+        });
+
+        readStream.on('data', (chunk) => {
+            if (icecastSocket && icecastSocket.writable) {
+                icecastSocket.write(chunk);
+            }
+        });
+
+        readStream.on('end', () => {
+            console.log(`⏹️  Трек завершён: ${track.name}`);
+            isSending = false;
+
+            // Удаляем временный трек
+            if (track.isDownloaded) {
+                try {
+                    fs.unlinkSync(track.path);
+                    audioFilesCache.splice(currentTrackIndex, 1);
+                    if (currentTrackIndex >= audioFilesCache.length && audioFilesCache.length > 0) {
+                        currentTrackIndex = 0;
+                    }
+                    playNextTrack(); // Следующий
+                    return;
+                } catch (err) { }
+            }
+
+            currentTrackIndex++;
+            playNextTrack(); // Следующий
+        });
+
+        readStream.on('error', (err) => {
+            console.error(`❌ Ошибка чтения: ${track.path}`, err.message);
+            isSending = false;
+            currentTrackIndex++;
+            playNextTrack();
+        });
+    }
+
+    playNextTrack();
+}
 async function appendToBuffer(track) {
     try {
         const data = await fs.promises.readFile(track.path);
