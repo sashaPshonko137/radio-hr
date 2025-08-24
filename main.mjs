@@ -213,34 +213,43 @@ function startNextTrack() {
     try {
         fd = fs.openSync(track.path, 'r');
     } catch (err) {
-        console.error(`❌ Не удалось открыть файл: ${track.path}`, err.message);
-        // Пропускаем трек
+        console.error(`❌ Не удалось открыть: ${track.path}`, err.message);
         currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-        setTimeout(startNextTrack, 100);
+        startNextTrack();
         return;
     }
 
-    const chunkSize = 8192; // 8KB
+    const chunkSize = 8192;
     const buffer = Buffer.alloc(chunkSize);
-    let bytesRead = 0;
-
-    // Задержка между чанками: имитация 128 kbps потока
-    // 128 kbps = 16 KB/s → 8KB каждые ~500 мс
-    const delayBetweenChunks = 500;
+    
+    // Время начала отправки (в миллисекундах)
+    const startTime = Date.now();
+    let totalBytesSent = 0;
+    const bitrateKbps = 128; // Предполагаем 128 kbps
+    const bytesPerSecond = (bitrateKbps * 1000) / 8; // 16000 байт/сек
 
     function sendNextChunk() {
         try {
-            bytesRead = fs.readSync(fd, buffer, 0, chunkSize, null);
+            const bytesRead = fs.readSync(fd, buffer, 0, chunkSize, null);
 
             if (bytesRead > 0) {
                 const chunk = buffer.slice(0, bytesRead);
+                
                 if (icecastSocket && icecastSocket.writable) {
                     icecastSocket.write(chunk);
                 }
-                // Отправляем следующий чанк через задержку
-                setTimeout(sendNextChunk, delayBetweenChunks);
+
+                totalBytesSent += bytesRead;
+
+                // Рассчитываем, когда должен быть отправлен следующий чанк
+                const expectedTimeMs = (totalBytesSent / bytesPerSecond) * 1000;
+                const realElapsedTime = Date.now() - startTime;
+                const delay = Math.max(0, expectedTimeMs - realElapsedTime);
+
+                // Отправляем следующий чанк в нужное время
+                setTimeout(sendNextChunk, delay);
             } else {
-                // Файл полностью прочитан
+                // Файл закончился
                 fs.closeSync(fd);
                 console.log(`⏹️  Трек завершён: ${track.name}`);
 
@@ -270,7 +279,7 @@ function startNextTrack() {
         }
     }
 
-    // Начинаем отправку чанков
+    // Запускаем отправку
     sendNextChunk();
 }
 
