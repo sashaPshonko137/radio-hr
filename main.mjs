@@ -218,14 +218,14 @@ function connectToIcecast() {
 async function appendToBuffer(track) {
     try {
         const data = await fs.promises.readFile(track.path);
-        const newBuffer = Buffer.alloc(audioBuffer.length + data.length);
-        audioBuffer.copy(newBuffer);
-        data.copy(newBuffer, audioBuffer.length);
+        
+        // 🔁 Быстрое объединение буферов (без Buffer.alloc)
+        const newBuffer = Buffer.concat([audioBuffer, data]);
         audioBuffer = newBuffer;
 
         console.log(`📥 Добавлен в буфер: ${track.name} (${Math.round(data.length / 1024)} KB)`);
 
-        // Удаляем временный трек
+        // 🗑️ Удаляем временный трек
         if (track.isDownloaded) {
             setTimeout(() => {
                 try {
@@ -233,51 +233,60 @@ async function appendToBuffer(track) {
                 } catch (err) {}
             }, 1000);
         }
+
+        track.bufferLoaded = true;
     } catch (err) {
         console.error(`❌ Не удалось добавить в буфер: ${track.path}`);
     }
 }
-
 function loadNextTrackToBuffer() {
     if (audioFilesCache.length === 0) return;
 
     const nextTrack = audioFilesCache.find(track => {
-        return !track.bufferLoaded; // Простой флаг
+        return !track.bufferLoaded;
     });
 
     if (nextTrack) {
-        nextTrack.bufferLoaded = true;
+        console.log(`⏳ Предзагружаем: ${nextTrack.name}`);
         appendToBuffer(nextTrack);
     }
 }
 
 function startByteStream() {
+    const startTime = Date.now(); // Время начала потока
+    let totalBytesSent = 0;
+
     function sendNextChunk() {
         if (!isStreaming || !icecastConnected) return;
 
-        // Подгружаем следующий трек, если буфер почти пуст
-        if (audioBuffer.length - bufferPosition < CHUNK_SIZE * 5) {
+        // 🔽 Подгружаем следующий трек, если буфер заканчивается
+        if (audioBuffer.length - bufferPosition < CHUNK_SIZE * 10) {
             loadNextTrackToBuffer();
         }
 
-        // Создаём чанк
+        // ✂️ Формируем чанк
         let chunk = null;
         if (bufferPosition < audioBuffer.length) {
             const end = Math.min(bufferPosition + CHUNK_SIZE, audioBuffer.length);
             chunk = audioBuffer.slice(bufferPosition, end);
             bufferPosition += chunk.length;
+            totalBytesSent += chunk.length;
         }
 
-        // Отправляем чанк, если он есть
+        // 📦 Отправляем, если есть данные
         if (chunk && icecastSocket && icecastSocket.writable) {
             icecastSocket.write(chunk);
         }
 
-        // Отправляем следующий чанк через 50 мс
-        setTimeout(sendNextChunk, 50);
+        // ⏱️ Рассчитываем, когда должен быть отправлен следующий чанк
+        const expectedTimeMs = (totalBytesSent / BYTES_PER_SECOND) * 1000;
+        const realTimeMs = Date.now() - startTime;
+        const delay = Math.max(0, expectedTimeMs - realTimeMs);
+
+        // 🔁 Отправляем следующий чанк в нужное время
+        setTimeout(sendNextChunk, delay);
     }
 
-    // Запускаем цикл
     sendNextChunk();
 }
 
@@ -315,10 +324,10 @@ async function addTrackToQueue(trackName) {
         console.log(`✅ Трек добавлен: ${newTrack.name}`);
 
         // Добавляем в буфер, если идёт поток
-        if (isStreaming) {
-            newTrack.bufferLoaded = true;
-            appendToBuffer(newTrack);
-        }
+if (isStreaming) {
+    newTrack.bufferLoaded = true;
+    appendToBuffer(newTrack); // ✅ Сразу в буфер
+}
 
         if (!isStreaming && audioFilesCache.length > 0) {
             console.log('▶️ Запускаем поток');
@@ -396,11 +405,14 @@ const server = http.createServer(async (req, res) => {
 getAudioFilesWithDurations().then(files => {
     audioFilesCache = files;
     console.log(`✅ Загружено ${files.length} треков`);
+
+    // ✅ Предзагружаем первые 2 трека
     if (files.length > 0) {
-        console.log('🚀 Запускаем радио');
-        connectToIcecast();
-    } else {
-        console.log('ℹ️  Папка audio пуста. Добавьте треки через /add');
+        files.slice(0, 2).forEach(track => {
+            track.bufferLoaded = true;
+            appendToBuffer(track);
+        });
+        setTimeout(connectToIcecast, 200);
     }
 });
 
