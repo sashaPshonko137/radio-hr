@@ -5,5 +5,4 @@ docker run -d \
   -v "$(pwd)/playlist.txt:/app/playlist.txt" \
   -v "$(pwd)/radio.liq:/app/radio.liq" \
   -v "$(pwd):/media" \
-  liquidsoap/liquidsoap:latest \
-  /app/radio.liq
+  highrise-radio
