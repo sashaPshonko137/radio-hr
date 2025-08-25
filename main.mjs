@@ -5,19 +5,15 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 import { parseFile } from 'music-metadata';
 import { exec } from 'child_process';
-import icecast from 'icecast-client'; // Импортируем библиотеку
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'audio');
 const PORT = 8008;
-const ICECAST_PORT = 8000;
 const CACHE_DIR = path.join(__dirname, 'cache');
+const PLAYLIST_FILE = path.join(__dirname, 'playlist.txt');
 const ICECAST_PASSWORD = 'hackme';
 
-let icecastStream = null; // Теперь это будет поток от icecast-client
-let isStreaming = false;
-let audioFilesCache = [];
-
+// Создаем папку кэша
 if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
     console.log(`📁 Создана папка кэша: ${CACHE_DIR}`);
@@ -96,145 +92,58 @@ async function downloadYouTubeTrack(videoUrl) {
     });
 }
 
-async function scanDirectory(dir, isCached) {
-    if (!fs.existsSync(dir)) return [];
-    return (await fs.promises.readdir(dir))
-        .filter(file => ['.mp3', '.wav', '.ogg', '.m4a', '.flac'].includes(path.extname(file).toLowerCase()))
-        .map(file => path.join(dir, file))
-        .map(async filePath => {
-            try {
-                const metadata = await parseFile(filePath);
-                const duration = metadata.format.duration 
-                    ? Math.round(metadata.format.duration * 1000) 
-                    : 180000;
-                const bitrate = metadata.format.bitrate 
-                    ? Math.round(metadata.format.bitrate) 
-                    : 128000;
-
-                return {
-                    path: filePath,
-                    duration,
-                    bitrate,
-                    name: path.basename(filePath, path.extname(filePath)),
-                    isDownloaded: isCached,
-                    sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
-                };
-            } catch (error) {
-                return {
-                    path: filePath,
-                    duration: 180000,
-                    bitrate: 128000,
-                    name: path.basename(filePath, path.extname(filePath)),
-                    isDownloaded: isCached,
-                    sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
-                };
-            }
-        });
-}
-
-function extractUrlFromCacheName(filePath) {
-    const match = path.basename(filePath).match(/youtube_([a-zA-Z0-9_-]{11})\.mp3/);
-    return match ? `https://www.youtube.com/watch?v=${match[1]}` : null;
-}
-
-async function getAudioFilesWithDurations() {
-    const [staticFiles, cachedFiles] = await Promise.all([
-        scanDirectory(AUDIO_DIR, false),
-        scanDirectory(CACHE_DIR, true)
-    ]);
-    return (await Promise.all([...staticFiles, ...cachedFiles])).filter(Boolean);
-}
-
-// =============== ПОДКЛЮЧЕНИЕ К ICECAST ЧЕРЕЗ БИБЛИОТЕКУ ===============
-
-async function connectToIcecast() {
+// Обновляем плейлист
+function updatePlaylist() {
     try {
-        // Уничтожаем предыдущее соединение, если оно есть
-        if (icecastStream) {
-            icecastStream.end();
-            icecastStream = null;
-        }
-
-        console.log(`📡 Подключаемся к Icecast: localhost:${ICECAST_PORT}`);
-        
-        // Создаем поток к Icecast с помощью библиотеки
-        icecastStream = await icecast.write(`http://localhost:${ICECAST_PORT}/highrise-radio.mp3`, {
-            auth: {
-                username: 'source',  // Всегда 'source' для подключения
-                password: ICECAST_PASSWORD
-            },
-            headers: {
-                'Content-Type': 'audio/mpeg',
-                'icy-name': 'Highrise Radio',
-                'icy-genre': 'Virtual',
-                'icy-pub': 1
-            }
-        });
-
-        console.log('🎉 Успешное подключение к Icecast');
-
-        // Обрабатываем ошибки
-        icecastStream.on('error', (err) => {
-            console.error('❌ Ошибка Icecast:', err.message);
-            setTimeout(connectToIcecast, 5000);
-        });
-
-        // Запускаем поток, если есть треки
-        if (audioFilesCache.length > 0) {
-            isStreaming = true;
-            playNextTrack();
-        }
-
-        return true;
+        // Собираем все MP3 файлы из AUDIO_DIR и CACHE_DIR
+        const audioFiles = fs.readdirSync(AUDIO_DIR)
+            .filter(file => path.extname(file).toLowerCase() === '.mp3')
+            .map(file => {
+                // Преобразуем путь в формат, который понимает Liquidsoap
+                return path.resolve(AUDIO_DIR, file);
+            })
+            .join('\n');
+            
+        const cacheFiles = fs.readdirSync(CACHE_DIR)
+            .filter(file => path.extname(file).toLowerCase() === '.mp3')
+            .map(file => {
+                // Преобразуем путь в формат, который понимает Liquidsoap
+                return path.resolve(CACHE_DIR, file);
+            })
+            .join('\n');
+            
+        // Записываем в playlist.txt
+        fs.writeFileSync(PLAYLIST_FILE, `${audioFiles}\n${cacheFiles}`);
+        console.log('✅ Плейлист обновлен');
     } catch (err) {
-        console.error('❌ Не удалось подключиться к Icecast:', err.message);
-        setTimeout(connectToIcecast, 5000);
+        console.error('❌ Не удалось обновить плейлист:', err);
+    }
+}
+
+// Меняем следующий трек через Liquidsoap API
+async function changeNextTrack(filePath) {
+    try {
+        const response = await fetch(`http://localhost:1234/radio/next?uri=${encodeURIComponent(filePath)}`);
+        const result = await response.text();
+        console.log(`✅ ${result}`);
+        return true;
+    } catch (error) {
+        console.error('❌ Не удалось изменить трек:', error);
         return false;
     }
 }
 
-// =============== ПОТОК С ИСПОЛЬЗОВАНИЕМ БИБЛИОТЕКИ ===============
-
-function playNextTrack() {
-    if (!isStreaming || audioFilesCache.length === 0) {
-        console.log('⏸️  Очередь пуста');
-        return;
+// Проверяем, запущен ли Liquidsoap
+function isLiquidsoapRunning() {
+    try {
+        // Проверяем, доступен ли API Liquidsoap
+        exec('docker inspect -f \'{{.State.Running}}\' highrise-radio', (error, stdout) => {
+            return stdout.trim() === 'true';
+        });
+        return true;
+    } catch (err) {
+        return false;
     }
-
-    const track = audioFilesCache[0];
-    console.log(`🎵 Начинаем трек: ${track.name}`);
-
-    // Создаем поток чтения
-    const readStream = fs.createReadStream(track.path);
-
-    // Отправляем в Icecast
-    readStream.pipe(icecastStream, { end: false });
-
-    readStream.on('error', (err) => {
-        console.error(`❌ Ошибка чтения ${track.name}:`, err.message);
-        audioFilesCache.shift(); // Удаляем проблемный трек
-        playNextTrack(); // Следующий трек
-    });
-
-    readStream.on('end', () => {
-        console.log(`⏹️  Трек завершён: ${track.name}`);
-
-        // Удаляем временный трек
-        if (track.isDownloaded) {
-            try {
-                fs.unlinkSync(track.path);
-                console.log(`🗑️  Удалён: ${track.name}`);
-            } catch (err) {
-                console.error('❌ Не удалось удалить:', err);
-            }
-        }
-
-        // Удаляем из очереди
-        audioFilesCache.shift();
-
-        // Следующий трек
-        playNextTrack();
-    });
 }
 
 // =============== ДОБАВЛЕНИЕ ТРЕКОВ ===============
@@ -246,7 +155,11 @@ async function addTrackToQueue(trackName) {
     const videoUrl = await searchYouTube(trackName);
     if (!videoUrl) return false;
 
-    if (audioFilesCache.some(t => t.sourceUrl === videoUrl)) {
+    // Проверяем, не в очереди ли уже этот трек
+    const cacheFileName = await getCacheFileName(videoUrl);
+    const cacheFilePath = path.join(CACHE_DIR, cacheFileName);
+    
+    if (fs.existsSync(cacheFilePath)) {
         console.log('⚠️  Уже в очереди:', videoUrl);
         return false;
     }
@@ -254,31 +167,18 @@ async function addTrackToQueue(trackName) {
     try {
         const filePath = await downloadYouTubeTrack(videoUrl);
         const metadata = await parseFile(filePath);
-        const bitrate = metadata.format.bitrate || 128000;
-
-        const newTrack = {
-            path: filePath,
-            bitrate,
-            name: path.basename(filePath, path.extname(filePath)),
-            isDownloaded: true,
-            sourceUrl: videoUrl
-        };
-
-        // Вставляем после текущего трека (после первого элемента)
-        if (audioFilesCache.length > 0) {
-            audioFilesCache.splice(1, 0, newTrack);
+        const name = path.basename(filePath, path.extname(filePath));
+        
+        console.log(`✅ Трек добавлен: ${name}`);
+        updatePlaylist(); // Обновляем плейлист для Liquidsoap
+        
+        // Если поток запущен, меняем следующий трек
+        if (isLiquidsoapRunning()) {
+            await changeNextTrack(filePath);
         } else {
-            audioFilesCache.push(newTrack);
+            console.log('ℹ️  Liquidsoap не запущен. Запустите контейнер.');
         }
-
-        console.log(`✅ Трек добавлен: ${newTrack.name}`);
-
-        // Если поток не запущен — начинаем
-        if (!isStreaming && audioFilesCache.length > 0) {
-            console.log('▶️ Запускаем поток');
-            connectToIcecast();
-        }
-
+        
         return true;
     } catch (error) {
         console.error('❌ Ошибка добавления:', error);
@@ -323,7 +223,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === '/stream.mp3') {
-        res.writeHead(302, { 'Location': `http://${SERVER_IP}:${ICECAST_PORT}/highrise-radio.mp3` });
+        res.writeHead(302, { 'Location': `http://${SERVER_IP}:8000/highrise-radio.mp3` });
         res.end();
         return;
     }
@@ -354,34 +254,31 @@ const server = http.createServer(async (req, res) => {
 
 // =============== ЗАПУСК ===============
 
-getAudioFilesWithDurations().then(files => {
-    audioFilesCache = files;
-    console.log(`✅ Загружено ${files.length} треков`);
-    if (files.length > 0) {
-        console.log('🚀 Запускаем радио');
-        connectToIcecast();
-    } else {
-        console.log('ℹ️  Папка audio пуста. Добавьте треки через /add');
-    }
-});
+// Инициализируем плейлист
+updatePlaylist();
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`
 🚀 Сервер запущен: http://${SERVER_IP}:${PORT}
-🎧 Поток: http://${SERVER_IP}:${ICECAST_PORT}/highrise-radio.mp3
+🎧 Поток: http://${SERVER_IP}:8000/highrise-radio.mp3
 
-💡 Убедитесь в icecast.xml:
+💡 Для работы радио:
+1. Убедитесь, что Docker установлен
+2. Запустите контейнер Liquidsoap:
+   docker run -d --name highrise-radio -p 8000:8000 -p 1234:1234 \\
+     -v "$(pwd)/playlist.txt:/app/playlist.txt" \\
+     -v "$(pwd)/radio.liq:/app/radio.liq" \\
+     -v "$(pwd):/media" \\
+     savonet/liquidsoap:latest /app/radio.liq
+3. Убедитесь в icecast.xml:
    - source-password: ${ICECAST_PASSWORD}
    - bind-address: 0.0.0.0
-   - port: ${ICECAST_PORT}
+   - port: 8000
    - mount: /highrise-radio.mp3
 `);
 });
 
 process.on('SIGINT', () => {
     console.log('\n🛑 Остановка сервера...');
-    if (icecastStream) {
-        icecastStream.end();
-    }
     process.exit(0);
 });
