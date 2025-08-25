@@ -5,5 +5,5 @@ docker run -d \
   -v "$(pwd)/playlist.txt:/app/playlist.txt" \
   -v "$(pwd)/radio.liq:/app/radio.liq" \
   -v "$(pwd):/media" \
-  savonet/liquidsoap:latest \
+  liquidsoap/liquidsoap:latest \
   /app/radio.liq
