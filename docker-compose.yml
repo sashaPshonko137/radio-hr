@@ -11,17 +11,13 @@ services:
       - 8000:8000
     environment:
       - AZURACAST_DISABLE_IP_CHECK=true
-    # УДАЛИТЕ эту строку ↓
-    # depends_on:
-    #   - stations
 
   stations:
-    image: azuracast/azuracast_stations:latest
+    image: azuracast/stations:latest  # ПРАВИЛЬНОЕ ИМЯ ОБРАЗА
     restart: always
     volumes:
       - azuracast_data:/var/azuracast
     shm_size: '512mb'
-    # Оставьте как есть
     depends_on:
       - web
 
