@@ -1,0 +1,28 @@
+version: '2.4'
+
+services:
+  web:
+    image: azuracast/azuracast:latest
+    restart: always
+    volumes:
+      - azuracast_data:/var/azuracast
+    ports:
+      - 80:80
+      - 8000:8000
+    environment:
+      - AZURACAST_DISABLE_IP_CHECK=true
+    depends_on:
+      - stations
+
+  stations:
+    image: azuracast/azuracast_stations:latest
+    restart: always
+    volumes:
+      - azuracast_data:/var/azuracast
+    shm_size: '512mb'
+    depends_on:
+      - web
+
+volumes:
+  azuracast_data:
+    driver: local

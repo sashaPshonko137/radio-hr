@@ -10,8 +10,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'audio');
 const PORT = 8008;
 const CACHE_DIR = path.join(__dirname, 'cache');
-const VLC_HTTP_PORT = 8080;
-const VLC_PASSWORD = 'hackme';
+const AZURACAST_URL = 'http://localhost'; // URL вашего AzuraCast
+const AZURACAST_API_KEY = 'ваш_api_ключ'; // Замените на ваш API ключ
+const STATION_ID = '1'; // ID вашей радиостанции (обычно 1)
 
 // Убедитесь, что папки существуют
 if (!fs.existsSync(CACHE_DIR)) {
@@ -81,72 +82,59 @@ async function downloadYouTubeTrack(videoUrl) {
     });
 }
 
-// Проверка подключения к VLC
-function checkVLCConnection() {
-    return new Promise((resolve) => {
-        console.log('📡 Проверка подключения к VLC...');
-        const url = `http://localhost:${VLC_HTTP_PORT}/requests/status.json`;
+// Добавить трек в AzuraCast как следующий
+async function addToAzuraCast(filePath, trackName) {
+    try {
+        // Сначала загружаем файл
+        const formData = new FormData();
+        formData.append('file', fs.createReadStream(filePath));
         
-        const options = {
-            auth: `:${VLC_PASSWORD}`
-        };
-        
-        http.get(url, options, (res) => {
-            if (res.statusCode === 200) {
-                console.log('🟢 VLC подключён успешно');
-                resolve(true);
-            } else {
-                console.error('🔴 VLC недоступен:', res.statusCode);
-                resolve(false);
+        const uploadResponse = await fetch(
+            `${AZURACAST_URL}/api/station/${STATION_ID}/files`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${AZURACAST_API_KEY}`,
+                    'Content-Type': 'multipart/form-data'
+                },
+                body: formData
             }
-        }).on('error', (err) => {
-            console.error('🔴 VLC недоступен:', err.message);
-            resolve(false);
-        });
-    });
-}
-
-// Добавить трек в очередь VLC
-function addToVLC(filePath, insertNext = false) {
-    return new Promise((resolve, reject) => {
-        const url = `http://localhost:${VLC_HTTP_PORT}/requests/status.json`;
-        const options = {
-            method: 'POST',
-            headers: {
-                'Authorization': 'Basic ' + Buffer.from(`:${VLC_PASSWORD}`).toString('base64')
-            }
-        };
+        );
         
-        let command;
-        if (insertNext) {
-            command = `command=pl_add&input=${encodeURIComponent(filePath)}&option=start&name=${path.basename(filePath)}`;
-        } else {
-            command = `command=pl_add&input=${encodeURIComponent(filePath)}&name=${path.basename(filePath)}`;
+        if (!uploadResponse.ok) {
+            throw new Error(`Ошибка загрузки: ${uploadResponse.status}`);
         }
         
-        const req = http.request(url + '?' + command, options, (res) => {
-            let data = '';
-            res.on('data', (chunk) => {
-                data += chunk;
-            });
-            res.on('end', () => {
-                if (res.statusCode === 200) {
-                    console.log(`✅ Трек добавлен в VLC: ${filePath}`);
-                    resolve(data);
-                } else {
-                    console.error('❌ Ошибка VLC:', data);
-                    reject(new Error(`VLC error: ${res.statusCode}`));
-                }
-            });
-        });
+        // Получаем ID файла
+        const fileData = await uploadResponse.json();
+        const fileId = fileData.id;
         
-        req.on('error', (error) => {
-            console.error('❌ Ошибка запроса к VLC:', error);
-            reject(error);
-        });
+        // Добавляем в плейлист "Следующий трек"
+        const playlistResponse = await fetch(
+            `${AZURACAST_URL}/api/station/${STATION_ID}/playlist/2/queue`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${AZURACAST_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    id: fileId,
+                    time: 0
+                })
+            }
+        );
         
-        req.end();
-    });
+        if (!playlistResponse.ok) {
+            throw new Error(`Ошибка добавления в плейлист: ${playlistResponse.status}`);
+        }
+        
+        console.log(`✅ Трек добавлен в AzuraCast: ${trackName}`);
+        return true;
+    } catch (error) {
+        console.error('❌ Ошибка добавления в AzuraCast:', error);
+        return false;
+    }
 }
 
 // =============== ДОБАВЛЕНИЕ ТРЕКОВ ===============
@@ -158,26 +146,14 @@ async function addTrackToQueue(trackName) {
     const videoUrl = await searchYouTube(trackName);
     if (!videoUrl) return false;
 
-    // Проверяем, есть ли уже такой трек в кэше
-    const cacheFileName = await getCacheFileName(videoUrl);
-    const cacheFilePath = path.join(CACHE_DIR, cacheFileName);
-    
-    if (fs.existsSync(cacheFilePath)) {
-        console.log(`✅ Используем кэшированный трек: ${cacheFilePath}`);
-        
-        // Добавляем в VLC как следующий трек
-        await addToVLC(cacheFilePath, true);
-        return true;
-    }
-
     try {
         const filePath = await downloadYouTubeTrack(videoUrl);
         const name = path.basename(filePath, path.extname(filePath));
         
         console.log(`✅ Трек добавлен: ${name}`);
         
-        // Добавляем в VLC как следующий трек
-        await addToVLC(filePath, true);
+        // Добавляем в AzuraCast как следующий трек
+        await addToAzuraCast(filePath, name);
         
         return true;
     } catch (error) {
@@ -223,7 +199,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === '/stream.mp3') {
-        res.writeHead(302, { 'Location': `http://${SERVER_IP}:8000/` });
+        res.writeHead(302, { 'Location': `http://${SERVER_IP}:8000/radio.mp3` });
         res.end();
         return;
     }
@@ -254,28 +230,18 @@ const server = http.createServer(async (req, res) => {
 
 // =============== ЗАПУСК ===============
 
-server.listen(PORT, '0.0.0.0', async () => {
+server.listen(PORT, '0.0.0.0', () => {
     console.log(`
 🚀 Сервер запущен: http://${SERVER_IP}:${PORT}
-🎧 Поток: http://${SERVER_IP}:8000/
+🎧 Поток: http://${SERVER_IP}:8000/radio.mp3
 
 💡 Для работы:
-1. Установите VLC: sudo apt install vlc
-2. Запустите VLC сервер:
-   cvlc --intf http --http-port 8080 --http-password "hackme" \\
-     --sout "#transcode{acodec=mp3,ab=128}:http{mux=mp3,dst=:8000/}" \\
-     --loop /путь/к/вашей/audio-папке
-3. Добавляйте треки через веб-интерфейс
+1. Установите AzuraCast через Docker
+2. Настройте радиостанцию в веб-интерфейсе
+3. Получите API ключ в Настройках → API Токены
+4. Замените AZURACAST_API_KEY в коде
+5. Добавляйте треки через веб-интерфейс
 `);
-    
-    // Проверяем подключение к VLC
-    const isConnected = await checkVLCConnection();
-    
-    if (isConnected) {
-        console.log('✅ VLC работает корректно');
-    } else {
-        console.log('⚠️  VLC не подключен. Некоторые функции будут недоступны.');
-    }
 });
 
 process.on('SIGINT', () => {
