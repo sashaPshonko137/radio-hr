@@ -74,10 +74,23 @@ async function downloadYouTubeTrack(videoUrl) {
     });
 }
 
+// Проверка подключения к MPD
+function checkMPDConnection() {
+    console.log('📡 Проверка подключения к MPD...');
+    exec('mpc status', (error, stdout, stderr) => {
+        if (error) {
+            console.error('🔴 MPD недоступен:', stderr.trim() || error.message);
+            console.log('💡 Убедитесь, что MPD запущен: mpd /etc/mpd.conf');
+        } else {
+            console.log('🟢 MPD подключён успешно');
+            console.log(`📋 Статус MPD:\n${stdout}`);
+        }
+    });
+}
+
 // Добавить трек в MPD
 function addToMPD(filePath, insertNext = false) {
     return new Promise((resolve, reject) => {
-        const position = insertNext ? '0' : '';
         const cmd = insertNext 
             ? `mpc addid "${filePath}" 0` 
             : `mpc add "${filePath}"`;
@@ -193,11 +206,13 @@ server.listen(PORT, '0.0.0.0', () => {
 🎧 Поток: http://${SERVER_IP}:8000
 
 💡 Для работы:
-1. Установите MPD: sudo apt install mpd mpc
-2. Настройте /etc/mpd.conf
-3. Запустите: mpd /etc/mpd.conf
-4. Добавляйте треки через веб-интерфейс
+1. Убедитесь, что MPD запущен: mpd /etc/mpd.conf
+2. Проверьте статус: mpc status
+3. Добавляйте треки через веб-интерфейс
 `);
+    
+    // Проверяем подключение к MPD при старте
+    checkMPDConnection();
 });
 
 process.on('SIGINT', () => {
