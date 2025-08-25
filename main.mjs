@@ -10,12 +10,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'audio');
 const PORT = 8008;
 const CACHE_DIR = path.join(__dirname, 'cache');
-const MPD_PORT = 6600; // Порт для MPD
+const VLC_HTTP_PORT = 8080;
+const VLC_PASSWORD = 'hackme';
 
 // Убедитесь, что папки существуют
 if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
-    console.log(`📁 Создана папка кэша: ${CACHE_DIR}`);
 }
 
 function getServerIP() {
@@ -67,14 +67,8 @@ async function searchYouTube(trackName) {
 async function downloadYouTubeTrack(videoUrl) {
     const cacheFileName = await getCacheFileName(videoUrl);
     const cacheFilePath = path.join(CACHE_DIR, cacheFileName);
-    
-    if (fs.existsSync(cacheFilePath)) {
-        console.log(`✅ Используем кэшированный трек: ${cacheFilePath}`);
-        return cacheFilePath;
-    }
+    if (fs.existsSync(cacheFilePath)) return cacheFilePath;
 
-    console.log(`📥 Скачиваем: ${videoUrl}`);
-    
     const ytDlpCommand = fs.existsSync(`${os.homedir()}/yt-dlp`) ? 
         `${os.homedir()}/yt-dlp` : 'yt-dlp';
     
@@ -82,101 +76,76 @@ async function downloadYouTubeTrack(videoUrl) {
     
     return new Promise((resolve, reject) => {
         exec(command, { timeout: 120000 }, (error) => {
-            if (error) {
-                console.error('❌ Ошибка скачивания:', error);
-                reject(error);
-            } else {
-                console.log(`✅ Трек сохранен: ${cacheFilePath}`);
-                resolve(cacheFilePath);
-            }
+            error ? reject(error) : resolve(cacheFilePath);
         });
     });
 }
 
-// Проверка подключения к MPD
-function checkMPDConnection() {
+// Проверка подключения к VLC
+function checkVLCConnection() {
     return new Promise((resolve) => {
-        console.log('📡 Проверка подключения к MPD...');
-        exec(`mpc -p ${MPD_PORT} status`, (error, stdout, stderr) => {
-            if (error) {
-                console.error('🔴 MPD недоступен:', stderr.trim() || error.message);
-                console.log(`💡 Убедитесь, что MPD запущен: mpd /etc/mpd.conf`);
-                resolve(false);
-            } else {
-                console.log('🟢 MPD подключён успешно');
-                console.log(`📋 Статус MPD:\n${stdout}`);
+        console.log('📡 Проверка подключения к VLC...');
+        const url = `http://localhost:${VLC_HTTP_PORT}/requests/status.json`;
+        
+        const options = {
+            auth: `:${VLC_PASSWORD}`
+        };
+        
+        http.get(url, options, (res) => {
+            if (res.statusCode === 200) {
+                console.log('🟢 VLC подключён успешно');
                 resolve(true);
-            }
-        });
-    });
-}
-
-// Добавить трек в MPD
-function addToMPD(filePath, insertNext = false) {
-    return new Promise((resolve, reject) => {
-        const cmd = insertNext 
-            ? `mpc -p ${MPD_PORT} addid "${filePath}" 0` 
-            : `mpc -p ${MPD_PORT} add "${filePath}"`;
-        
-        exec(cmd, (error, stdout, stderr) => {
-            if (error) {
-                console.error('❌ Ошибка MPD:', stderr);
-                reject(error);
             } else {
-                console.log(`✅ Трек добавлен в MPD: ${filePath}`);
-                resolve(stdout);
-            }
-        });
-    });
-}
-
-// Проверить, есть ли уже такой трек в очереди
-function isTrackInQueue(videoUrl) {
-    return new Promise((resolve) => {
-        const cmd = `mpc -p ${MPD_PORT} playlist`;
-        
-        exec(cmd, (error, stdout) => {
-            if (error) {
-                console.error('❌ Ошибка проверки очереди:', error);
+                console.error('🔴 VLC недоступен:', res.statusCode);
                 resolve(false);
-                return;
             }
-            
-            const playlist = stdout.split('\n').filter(Boolean);
-            const cacheFileName = getCacheFileName(videoUrl);
-            
-            const isDuplicate = playlist.some(track => {
-                const trackPath = path.basename(track);
-                return trackPath === cacheFileName;
-            });
-            
-            resolve(isDuplicate);
+        }).on('error', (err) => {
+            console.error('🔴 VLC недоступен:', err.message);
+            resolve(false);
         });
     });
 }
 
-// Получить список треков из MPD
-async function getMPDPlaylist() {
-    return new Promise((resolve) => {
-        const cmd = `mpc -p ${MPD_PORT} playlist`;
-        
-        exec(cmd, (error, stdout) => {
-            if (error) {
-                console.error('❌ Ошибка получения плейлиста:', error);
-                resolve([]);
-                return;
+// Добавить трек в очередь VLC
+function addToVLC(filePath, insertNext = false) {
+    return new Promise((resolve, reject) => {
+        const url = `http://localhost:${VLC_HTTP_PORT}/requests/status.json`;
+        const options = {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Basic ' + Buffer.from(`:${VLC_PASSWORD}`).toString('base64')
             }
-            
-            const tracks = stdout.split('\n')
-                .filter(track => track.trim() !== '')
-                .map(track => ({
-                    path: track,
-                    name: path.basename(track, path.extname(track)),
-                    isDownloaded: track.includes('cache')
-                }));
-            
-            resolve(tracks);
+        };
+        
+        let command;
+        if (insertNext) {
+            command = `command=pl_add&input=${encodeURIComponent(filePath)}&option=start&name=${path.basename(filePath)}`;
+        } else {
+            command = `command=pl_add&input=${encodeURIComponent(filePath)}&name=${path.basename(filePath)}`;
+        }
+        
+        const req = http.request(url + '?' + command, options, (res) => {
+            let data = '';
+            res.on('data', (chunk) => {
+                data += chunk;
+            });
+            res.on('end', () => {
+                if (res.statusCode === 200) {
+                    console.log(`✅ Трек добавлен в VLC: ${filePath}`);
+                    resolve(data);
+                } else {
+                    console.error('❌ Ошибка VLC:', data);
+                    reject(new Error(`VLC error: ${res.statusCode}`));
+                }
+            });
         });
+        
+        req.on('error', (error) => {
+            console.error('❌ Ошибка запроса к VLC:', error);
+            reject(error);
+        });
+        
+        req.end();
     });
 }
 
@@ -184,22 +153,21 @@ async function getMPDPlaylist() {
 
 async function addTrackToQueue(trackName) {
     const hasYtDlp = await checkYtDlp();
-    if (!hasYtDlp) {
-        console.error('❌ yt-dlp не установлен');
-        return false;
-    }
+    if (!hasYtDlp) return false;
 
     const videoUrl = await searchYouTube(trackName);
-    if (!videoUrl) {
-        console.error('❌ Трек не найден');
-        return false;
-    }
+    if (!videoUrl) return false;
 
-    // Проверяем, есть ли уже такой трек в очереди
-    const isDuplicate = await isTrackInQueue(videoUrl);
-    if (isDuplicate) {
-        console.log('⚠️  Трек уже в очереди:', videoUrl);
-        return false;
+    // Проверяем, есть ли уже такой трек в кэше
+    const cacheFileName = await getCacheFileName(videoUrl);
+    const cacheFilePath = path.join(CACHE_DIR, cacheFileName);
+    
+    if (fs.existsSync(cacheFilePath)) {
+        console.log(`✅ Используем кэшированный трек: ${cacheFilePath}`);
+        
+        // Добавляем в VLC как следующий трек
+        await addToVLC(cacheFilePath, true);
+        return true;
     }
 
     try {
@@ -208,8 +176,8 @@ async function addTrackToQueue(trackName) {
         
         console.log(`✅ Трек добавлен: ${name}`);
         
-        // Добавляем в MPD как следующий трек
-        await addToMPD(filePath, true);
+        // Добавляем в VLC как следующий трек
+        await addToVLC(filePath, true);
         
         return true;
     } catch (error) {
@@ -255,54 +223,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === '/stream.mp3') {
-        res.writeHead(302, { 'Location': `http://${SERVER_IP}:8000` });
+        res.writeHead(302, { 'Location': `http://${SERVER_IP}:8000/` });
         res.end();
-        return;
-    }
-
-    if (req.url === '/status') {
-        try {
-            const playlist = await getMPDPlaylist();
-            const cmd = `mpc -p ${MPD_PORT} status`;
-            
-            exec(cmd, (error, stdout) => {
-                if (error) {
-                    res.writeHead(500, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'MPD недоступен' }));
-                    return;
-                }
-                
-                // Парсим статус MPD
-                const statusLines = stdout.split('\n');
-                const status = {};
-                
-                for (const line of statusLines) {
-                    const [key, value] = line.split(':').map(s => s.trim());
-                    if (key && value) {
-                        status[key.toLowerCase()] = value;
-                    }
-                }
-                
-                // Получаем текущий трек
-                let currentTrack = null;
-                if (status['volume'] && playlist.length > 0) {
-                    const currentPos = status['playing'] ? 
-                        parseInt(status['playing'].split('/')[0]) : 0;
-                    currentTrack = playlist[currentPos];
-                }
-                
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                    status: 'ok',
-                    currentTrack,
-                    queue: playlist,
-                    mpdStatus: status
-                }));
-            });
-        } catch (error) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: error.message }));
-        }
         return;
     }
 
@@ -313,11 +235,6 @@ const server = http.createServer(async (req, res) => {
         <button onclick="addTrack()">Добавить</button>
         <p id="status"></p>
         <audio controls src="/stream.mp3"></audio>
-        <div style="margin-top: 20px; border-top: 1px solid #ccc; padding-top: 10px;">
-            <h2>Текущая очередь</h2>
-            <div id="queue"></div>
-            <button onclick="refreshQueue()">Обновить</button>
-        </div>
         <script>
             async function addTrack() {
                 const track = document.getElementById('trackInput').value;
@@ -330,38 +247,7 @@ const server = http.createServer(async (req, res) => {
                 const data = await res.json();
                 document.getElementById('status').textContent = data.message;
                 document.getElementById('trackInput').value = '';
-                refreshQueue();
             }
-            
-            async function refreshQueue() {
-                const res = await fetch('/status');
-                const data = await res.json();
-                
-                if (data.error) {
-                    document.getElementById('queue').innerHTML = '<p>Ошибка: ' + data.error + '</p>';
-                    return;
-                }
-                
-                let html = '';
-                if (data.currentTrack) {
-                    html += '<div style="background: #e6f7ff; padding: 10px; margin-bottom: 10px;">';
-                    html += '<strong>Сейчас играет:</strong> ' + data.currentTrack.name + '<br>';
-                    html += '<small>' + data.currentTrack.path + '</small>';
-                    html += '</div>';
-                }
-                
-                html += '<strong>Очередь:</strong><ol>';
-                data.queue.forEach((track, index) => {
-                    html += '<li>' + track.name + (track.isDownloaded ? ' (YouTube)' : '') + '</li>';
-                });
-                html += '</ol>';
-                
-                document.getElementById('queue').innerHTML = html;
-            }
-            
-            // Автоматическое обновление очереди каждые 5 секунд
-            setInterval(refreshQueue, 5000);
-            refreshQueue();
         </script>
     `);
 });
@@ -371,29 +257,24 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '0.0.0.0', async () => {
     console.log(`
 🚀 Сервер запущен: http://${SERVER_IP}:${PORT}
-🎧 Поток: http://${SERVER_IP}:8000
+🎧 Поток: http://${SERVER_IP}:8000/
 
 💡 Для работы:
-1. Установите MPD: sudo apt install mpd mpc
-2. Настройте /etc/mpd.conf
-3. Запустите: mpd /etc/mpd.conf
-4. Добавляйте треки через веб-интерфейс
+1. Установите VLC: sudo apt install vlc
+2. Запустите VLC сервер:
+   cvlc --intf http --http-port 8080 --http-password "hackme" \\
+     --sout "#transcode{acodec=mp3,ab=128}:http{mux=mp3,dst=:8000/}" \\
+     --loop /путь/к/вашей/audio-папке
+3. Добавляйте треки через веб-интерфейс
 `);
     
-    // Проверяем подключение к MPD при старте
-    const isConnected = await checkMPDConnection();
+    // Проверяем подключение к VLC
+    const isConnected = await checkVLCConnection();
     
     if (isConnected) {
-        console.log('✅ MPD работает корректно');
-        
-        // Загружаем текущую очередь
-        const playlist = await getMPDPlaylist();
-        console.log(`📋 Текущая очередь: ${playlist.length} треков`);
-        playlist.forEach((track, i) => {
-            console.log(`${i + 1}. ${track.name}`);
-        });
+        console.log('✅ VLC работает корректно');
     } else {
-        console.log('⚠️  MPD не подключен. Некоторые функции будут недоступны.');
+        console.log('⚠️  VLC не подключен. Некоторые функции будут недоступны.');
     }
 });
 
