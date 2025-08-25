@@ -1,6 +1,7 @@
+# Dockerfile
 FROM ubuntu:20.04
 
-# Установка Liquidsoap
+# Установка зависимостей и Liquidsoap
 RUN apt-get update && \
     apt-get install -y software-properties-common && \
     add-apt-repository ppa:savonet/ppa && \
