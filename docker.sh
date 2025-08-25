@@ -1,3 +1,7 @@
+# Соберите образ
+docker build -t highrise-radio .
+
+# Запустите контейнер
 docker run -d \
   --name highrise-radio \
   -p 8000:8000 \
