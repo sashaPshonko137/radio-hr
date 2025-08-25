@@ -10,13 +10,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIO_DIR = path.join(__dirname, 'audio');
 const PORT = 8008;
 const CACHE_DIR = path.join(__dirname, 'cache');
-const PLAYLIST_FILE = path.join(__dirname, 'playlist.txt');
-const ICECAST_PASSWORD = 'hackme';
 
-// Создаем папку кэша
+// Убедитесь, что папки существуют
 if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
-    console.log(`📁 Создана папка кэша: ${CACHE_DIR}`);
 }
 
 function getServerIP() {
@@ -45,20 +42,8 @@ async function getCacheFileName(url) {
 
 async function checkYtDlp() {
     return new Promise((resolve) => {
-        const checkCommands = [
-            'test -f ~/yt-dlp && echo "home"',
-            'which yt-dlp 2>/dev/null && echo "system"',
-            'test -f /usr/local/bin/yt-dlp && echo "local"'
-        ];
-        exec(checkCommands.join(' || '), (error, stdout) => {
-            if (stdout && stdout.trim()) {
-                console.log(`✅ yt-dlp найден (${stdout.trim()})`);
-                resolve(true);
-            } else {
-                console.log('❌ yt-dlp не найден. Установите:');
-                console.log('wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O ~/yt-dlp && chmod +x ~/yt-dlp');
-                resolve(false);
-            }
+        exec('which yt-dlp', (error) => {
+            resolve(!error);
         });
     });
 }
@@ -72,7 +57,6 @@ async function searchYouTube(trackName) {
         const match = html.match(/"videoId":"([^"]{11})"/);
         return match ? `https://www.youtube.com/watch?v=${match[1]}` : null;
     } catch (error) {
-        console.error('❌ Ошибка поиска:', error);
         return null;
     }
 }
@@ -82,9 +66,7 @@ async function downloadYouTubeTrack(videoUrl) {
     const cacheFilePath = path.join(CACHE_DIR, cacheFileName);
     if (fs.existsSync(cacheFilePath)) return cacheFilePath;
 
-    const ytDlpCommand = fs.existsSync(`${os.homedir()}/yt-dlp`) ? `${os.homedir()}/yt-dlp` : 'yt-dlp';
-    const command = `${ytDlpCommand} -x --audio-format mp3 --audio-quality 0 -o "${cacheFilePath}" "${videoUrl}"`;
-
+    const command = `yt-dlp -x --audio-format mp3 --audio-quality 0 -o "${cacheFilePath}" "${videoUrl}"`;
     return new Promise((resolve, reject) => {
         exec(command, { timeout: 120000 }, (error) => {
             error ? reject(error) : resolve(cacheFilePath);
@@ -92,58 +74,24 @@ async function downloadYouTubeTrack(videoUrl) {
     });
 }
 
-// Обновляем плейлист
-function updatePlaylist() {
-    try {
-        // Собираем все MP3 файлы из AUDIO_DIR и CACHE_DIR
-        const audioFiles = fs.readdirSync(AUDIO_DIR)
-            .filter(file => path.extname(file).toLowerCase() === '.mp3')
-            .map(file => {
-                // Преобразуем путь в формат, который понимает Liquidsoap
-                return path.resolve(AUDIO_DIR, file);
-            })
-            .join('\n');
-            
-        const cacheFiles = fs.readdirSync(CACHE_DIR)
-            .filter(file => path.extname(file).toLowerCase() === '.mp3')
-            .map(file => {
-                // Преобразуем путь в формат, который понимает Liquidsoap
-                return path.resolve(CACHE_DIR, file);
-            })
-            .join('\n');
-            
-        // Записываем в playlist.txt
-        fs.writeFileSync(PLAYLIST_FILE, `${audioFiles}\n${cacheFiles}`);
-        console.log('✅ Плейлист обновлен');
-    } catch (err) {
-        console.error('❌ Не удалось обновить плейлист:', err);
-    }
-}
-
-// Меняем следующий трек через Liquidsoap API
-async function changeNextTrack(filePath) {
-    try {
-        const response = await fetch(`http://localhost:1234/radio/next?uri=${encodeURIComponent(filePath)}`);
-        const result = await response.text();
-        console.log(`✅ ${result}`);
-        return true;
-    } catch (error) {
-        console.error('❌ Не удалось изменить трек:', error);
-        return false;
-    }
-}
-
-// Проверяем, запущен ли Liquidsoap
-function isLiquidsoapRunning() {
-    try {
-        // Проверяем, доступен ли API Liquidsoap
-        exec('docker inspect -f \'{{.State.Running}}\' highrise-radio', (error, stdout) => {
-            return stdout.trim() === 'true';
+// Добавить трек в MPD
+function addToMPD(filePath, insertNext = false) {
+    return new Promise((resolve, reject) => {
+        const position = insertNext ? '0' : '';
+        const cmd = insertNext 
+            ? `mpc addid "${filePath}" 0` 
+            : `mpc add "${filePath}"`;
+        
+        exec(cmd, (error, stdout, stderr) => {
+            if (error) {
+                console.error('❌ Ошибка MPD:', stderr);
+                reject(error);
+            } else {
+                console.log(`✅ Трек добавлен в MPD: ${filePath}`);
+                resolve(stdout);
+            }
         });
-        return true;
-    } catch (err) {
-        return false;
-    }
+    });
 }
 
 // =============== ДОБАВЛЕНИЕ ТРЕКОВ ===============
@@ -155,29 +103,14 @@ async function addTrackToQueue(trackName) {
     const videoUrl = await searchYouTube(trackName);
     if (!videoUrl) return false;
 
-    // Проверяем, не в очереди ли уже этот трек
-    const cacheFileName = await getCacheFileName(videoUrl);
-    const cacheFilePath = path.join(CACHE_DIR, cacheFileName);
-    
-    if (fs.existsSync(cacheFilePath)) {
-        console.log('⚠️  Уже в очереди:', videoUrl);
-        return false;
-    }
-
     try {
         const filePath = await downloadYouTubeTrack(videoUrl);
-        const metadata = await parseFile(filePath);
         const name = path.basename(filePath, path.extname(filePath));
         
         console.log(`✅ Трек добавлен: ${name}`);
-        updatePlaylist(); // Обновляем плейлист для Liquidsoap
         
-        // Если поток запущен, меняем следующий трек
-        if (isLiquidsoapRunning()) {
-            await changeNextTrack(filePath);
-        } else {
-            console.log('ℹ️  Liquidsoap не запущен. Запустите контейнер.');
-        }
+        // Добавляем в MPD как следующий трек
+        await addToMPD(filePath, true);
         
         return true;
     } catch (error) {
@@ -223,7 +156,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === '/stream.mp3') {
-        res.writeHead(302, { 'Location': `http://${SERVER_IP}:8000/highrise-radio.mp3` });
+        res.writeHead(302, { 'Location': `http://${SERVER_IP}:8000` });
         res.end();
         return;
     }
@@ -254,27 +187,16 @@ const server = http.createServer(async (req, res) => {
 
 // =============== ЗАПУСК ===============
 
-// Инициализируем плейлист
-updatePlaylist();
-
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`
 🚀 Сервер запущен: http://${SERVER_IP}:${PORT}
-🎧 Поток: http://${SERVER_IP}:8000/highrise-radio.mp3
+🎧 Поток: http://${SERVER_IP}:8000
 
-💡 Для работы радио:
-1. Убедитесь, что Docker установлен
-2. Запустите контейнер Liquidsoap:
-   docker run -d --name highrise-radio -p 8000:8000 -p 1234:1234 \\
-     -v "$(pwd)/playlist.txt:/app/playlist.txt" \\
-     -v "$(pwd)/radio.liq:/app/radio.liq" \\
-     -v "$(pwd):/media" \\
-     savonet/liquidsoap:latest /app/radio.liq
-3. Убедитесь в icecast.xml:
-   - source-password: ${ICECAST_PASSWORD}
-   - bind-address: 0.0.0.0
-   - port: 8000
-   - mount: /highrise-radio.mp3
+💡 Для работы:
+1. Установите MPD: sudo apt install mpd mpc
+2. Настройте /etc/mpd.conf
+3. Запустите: mpd /etc/mpd.conf
+4. Добавляйте треки через веб-интерфейс
 `);
 });
 
