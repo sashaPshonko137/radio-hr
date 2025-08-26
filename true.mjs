@@ -337,12 +337,20 @@ async function addTrackToQueue(trackName) {
         };
         
         // 🔑 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: вставляем после текущего трека
-        let insertIndex = currentTrackIndex + 1;
-        
-        // Если вставляемый индекс выходит за пределы массива — ставим в конец
-        if (insertIndex > audioFilesCache.length) {
-            insertIndex = audioFilesCache.length;
-        }
+let boundaryIndex = 0;
+for (let i = 0; i < audioFilesCache.length; i++) {
+    if (audioFilesCache[i].isDownloaded) {
+        boundaryIndex = i;
+        break;
+    }
+}
+// Если нет добавленных треков, граница = длине массива
+if (boundaryIndex === 0 && !audioFilesCache[0]?.isDownloaded) {
+    boundaryIndex = audioFilesCache.length;
+}
+
+// ВСТАВЛЯЕМ ПОСЛЕ ГРАНИЦЫ
+let insertIndex = boundaryIndex;
         
         audioFilesCache.splice(insertIndex, 0, newTrack);
         
