@@ -12,7 +12,7 @@ const AUDIO_DIR = path.join(__dirname, 'audio');
 const PORT = 8000;
 const CACHE_DIR = path.join(__dirname, 'cache');
 
-setMaxListeners(50);
+setMaxListeners(500);
 
 if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
