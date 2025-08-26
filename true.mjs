@@ -482,9 +482,8 @@ function startGlobalTrackTimer() {
     playNextTrack();
 }
 
-// ОСНОВНОЕ ИЗМЕНЕНИЕ: УЛУЧШЕННАЯ ОТПРАВКА ТРЕКА С ПОЗИЦИИ
+// ИЗМЕНЕННАЯ ФУНКЦИЯ С ЗАДЕРЖКАМИ
 function sendTrackFromPosition(res, track, positionMs) {
-    // Гарантируем корректную позицию
     positionMs = Math.max(0, Math.min(positionMs, track.duration - 100));
     
     if (!fs.existsSync(track.path)) {
@@ -497,72 +496,50 @@ function sendTrackFromPosition(res, track, positionMs) {
 
     const readStream = fs.createReadStream(track.path);
     
-    // ОСНОВНОЕ ИЗМЕНЕНИЕ: УНИВЕРСАЛЬНЫЙ РАСЧЕТ БАЙТОВ
-    let bytesToSkip = 0;
-    
-    // Для MP3 используем расчет через битрейт
-    if (path.extname(track.path).toLowerCase() === '.mp3') {
+    if (positionMs > 0) {
         const bitrateKbps = track.bitrate / 1000;
         const bytesPerSecond = (bitrateKbps * 1000) / 8;
-        bytesToSkip = Math.floor(positionMs / 1000 * bytesPerSecond);
-    } 
-    // Для других форматов используем более надежный способ
-    else {
-        // Пробуем прочитать заголовок файла, чтобы определить параметры
-        try {
-            const stats = fs.statSync(track.path);
-            const durationMs = track.duration;
-            
-            // Если длительность известна, используем пропорциональный расчет
-            if (durationMs > 0) {
-                bytesToSkip = Math.floor((positionMs / durationMs) * stats.size);
+        const bytesToSkip = Math.floor(positionMs / 1000 * bytesPerSecond);
+        
+        let bytesSkipped = 0;
+        
+        readStream.on('data', (chunk) => {
+            if (bytesSkipped < bytesToSkip) {
+                bytesSkipped += chunk.length;
+                if (bytesSkipped >= bytesToSkip) {
+                    const remainingChunk = chunk.slice(bytesToSkip - (bytesSkipped - chunk.length));
+                    if (remainingChunk.length > 0 && !res.finished) {
+                        res.write(remainingChunk);
+                    }
+                }
             } else {
-                // Если длительность неизвестна, используем стандартный битрейт
-                const bitrateKbps = track.bitrate / 1000;
-                const bytesPerSecond = (bitrateKbps * 1000) / 8;
-                bytesToSkip = Math.floor(positionMs / 1000 * bytesPerSecond);
-            }
-        } catch (error) {
-            console.error('❌ Ошибка определения размера файла:', error);
-            // Используем стандартный расчет как fallback
-            const bitrateKbps = track.bitrate / 1000;
-            const bytesPerSecond = (bitrateKbps * 1000) / 8;
-            bytesToSkip = Math.floor(positionMs / 1000 * bytesPerSecond);
-        }
-    }
-    
-    let bytesSkipped = 0;
-    
-    readStream.on('data', (chunk) => {
-        if (bytesSkipped < bytesToSkip) {
-            bytesSkipped += chunk.length;
-            if (bytesSkipped >= bytesToSkip) {
-                const remainingChunk = chunk.slice(bytesToSkip - (bytesSkipped - chunk.length));
-                if (remainingChunk.length > 0 && !res.finished) {
-                    res.write(remainingChunk);
+                if (!res.finished) {
+                    res.write(chunk);
                 }
             }
-        } else {
-            if (!res.finished) {
-                res.write(chunk);
-            }
-        }
-    });
-    
-    // ОСНОВНОЕ ИЗМЕНЕНИЕ: УЛУЧШЕННАЯ ОБРАБОТКА КОНЦА ТРЕКА
+        });
+    } else {
+        readStream.pipe(res, { end: false });
+    }
+
+    // ОСНОВНОЕ ИЗМЕНЕНИЕ: ЗАДЕРЖКИ И ДЛИННАЯ ТИШИНА
     readStream.on('end', () => {
         if (!res.finished) {
-            // Отправляем 1.5 секунды тишины вместо 1 секунды
-            const silence = Buffer.alloc(24000, 0); // 24000 байт = 1.5 сек при 128kbps
-            
-            // Добавляем задержку перед отправкой тишины для новых клиентов
-            if (positionMs > 0) {
-                setTimeout(() => {
-                    res.write(silence);
-                }, 50);
-            } else {
-                res.write(silence);
-            }
+            // ЗАДЕРЖКА 1 СЕКУНДА ПЕРЕД ТИШИНОЙ
+            setTimeout(() => {
+                // ОТПРАВЛЯЕМ 2 СЕКУНДЫ ТИШИНЫ (32000 БАЙТ)
+                const silence = Buffer.alloc(32000, 0);
+                res.write(silence, () => {
+                    // ЗАДЕРЖКА 1 СЕКУНДА ПОСЛЕ ТИШИНЫ
+                    setTimeout(() => {
+                        // Проверяем, не завершилось ли соединение за это время
+                        if (!res.finished) {
+                            // Можно отправить что-то еще, но обычно следующий трек уже отправляется через глобальный таймер
+                            console.log('🔇 Дополнительная тишина после задержки отправлена');
+                        }
+                    }, 1000);
+                });
+            }, 1000);
         }
     });
 
@@ -650,63 +627,26 @@ const server = http.createServer(async (req, res) => {
             'Transfer-Encoding': 'chunked'
         });
 
-        // ОСНОВНОЕ ИЗМЕНЕНИЕ: ПОДРОБНАЯ ПРОВЕРКА ТЕКУЩЕГО ТРЕКА
-        if (isPlaying && trackStartTime > 0) {
-            // Проверяем, что индекс в пределах массива
-            if (currentTrackIndex >= 0 && currentTrackIndex < audioFilesCache.length) {
-                const currentTrack = audioFilesCache[currentTrackIndex];
-                
-                // Дополнительная проверка на существование трека
-                if (currentTrack && fs.existsSync(currentTrack.path)) {
-                    const safePosition = Math.min(currentPlaybackPosition, currentTrack.duration - 100);
-                    
-                    console.log(`🎧 Новый клиент: текущий трек "${currentTrack.name}", позиция: ${Math.round(safePosition / 1000)}с`);
-                    sendTrackFromPosition(res, currentTrack, safePosition);
-                    activeConnections.add(res);
-                    return;
-                } else if (currentTrack) {
-                    console.error(`❌ Файл трека не существует: ${currentTrack.path}`);
-                }
-            }
+        if (isPlaying && trackStartTime > 0 && currentTrackIndex >= 0 && currentTrackIndex < audioFilesCache.length) {
+            const currentTrack = audioFilesCache[currentTrackIndex];
+            const safePosition = Math.min(currentPlaybackPosition, currentTrack.duration - 100);
+
+            console.log(`🎧 Новый клиент: текущий трек "${currentTrack.name}", позиция: ${Math.round(safePosition / 1000)}с`);
+            sendTrackFromPosition(res, currentTrack, safePosition);
+            activeConnections.add(res);
+            return;
         }
 
-        // Если активного воспроизведения нет или трек не найден, начинаем с первого трека
         if (audioFilesCache.length > 0) {
             const firstTrack = audioFilesCache[0];
-            
-            // Проверяем существование файла перед отправкой
-            if (fs.existsSync(firstTrack.path)) {
-                console.log(`🎧 Новый клиент: первый трек "${firstTrack.name}", позиция: 0с`);
-                sendTrackFromPosition(res, firstTrack, 0);
-                activeConnections.add(res);
-                return;
-            } else {
-                console.error(`❌ Файл первого трека не существует: ${firstTrack.path}`);
-            }
+            console.log(`🎧 Новый клиент: первый трек "${firstTrack.name}", позиция: 0с`);
+            sendTrackFromPosition(res, firstTrack, 0);
+            activeConnections.add(res);
+            return;
         }
 
-        // Если ни один трек не подходит, отправляем пустоту
-        console.log('🔇 Отправляем тишину вместо трека');
-        const silence = Buffer.alloc(16000, 0);
-        
-        // Отправляем тишину с интервалом, чтобы клиент не отключился
-        const silenceInterval = setInterval(() => {
-            if (!res.finished) {
-                res.write(silence);
-            } else {
-                clearInterval(silenceInterval);
-            }
-        }, 1000);
-        
-        // Очищаем интервал при завершении соединения
-        req.on('close', () => {
-            clearInterval(silenceInterval);
-        });
-        
-        res.on('finish', () => {
-            clearInterval(silenceInterval);
-            activeConnections.delete(res);
-        });
+        res.end();
+        return;
     }
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
