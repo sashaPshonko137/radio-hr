@@ -602,55 +602,27 @@ if (req.url === '/stream.mp3') {
         'Transfer-Encoding': 'chunked'
     });
 
-    // --- Настройки ---
-    const SKIP_THRESHOLD_MS = 35000;   // Если до конца <30 сек — пропускаем трек
-    const DELAY_IF_PLAYING_MS = 22000; // Если играет давно — начать на 15 сек позже
-
-    let currentTrack = null;
-    let nextTrack = null;
-    let action = '';
-    let delayBeforeStart = 0;
-
+    // --- КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: ПОДКЛЮЧАЕМ ТОЧНО К ТЕКУЩЕЙ ПОЗИЦИИ ---
     if (isPlaying && trackStartTime > 0 && currentTrackIndex >= 0 && currentTrackIndex < audioFilesCache.length) {
-        currentTrack = audioFilesCache[currentTrackIndex];
-        const elapsed = Date.now() - trackStartTime;
-        const remainingMs = currentTrack.duration - elapsed;
+        const currentTrack = audioFilesCache[currentTrackIndex];
+        const elapsedMs = Date.now() - trackStartTime;
+        const safePosition = Math.min(elapsedMs, currentTrack.duration - 1000); // не ближе 1 сек к концу
 
-        if (remainingMs < SKIP_THRESHOLD_MS) {
-            // 🔹 Слишком мало времени — пропускаем текущий, начинаем следующий
-            const nextIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-            nextTrack = audioFilesCache[nextIndex];
-            action = 'skip';
-        } else {
-            // 🔹 Достаточно времени — включаем с задержкой
-            const startPosition = elapsed + DELAY_IF_PLAYING_MS;
-            const safePosition = Math.min(startPosition, currentTrack.duration - 1000); // не ближе 1 сек к концу
-
-            action = 'delayed';
-            delayBeforeStart = 0; // Начинаем сразу, но с позиции +15 сек
-
-            // Отправляем сразу
-            console.log(`🎧 Новый клиент: текущий трек "${currentTrack.name}", позиция: ${Math.round(safePosition / 1000)}с`);
-            sendTrackFromPosition(res, currentTrack, safePosition);
-            activeConnections.add(res);
-            return; // Выходим, чтобы не продолжать
-        }
-    } else {
-        // Если воспроизведение ещё не началось — начинаем с первого трека
-        nextTrack = audioFilesCache[0] || null;
-        action = 'first';
+        console.log(`🎧 Новый клиент: текущий трек "${currentTrack.name}", позиция: ${Math.round(safePosition / 1000)}с`);
+        sendTrackFromPosition(res, currentTrack, safePosition);
+        activeConnections.add(res);
+        return;
     }
 
-    // --- Обработка случая "пропускаем текущий" или "первый запуск" ---
-if (nextTrack) {
-    console.log(`▶️ Новый клиент начинает следующий трек: "${nextTrack.name}"`);
-    // УБРАЛИ ВСЕ ЗАДЕРЖКИ - НАЧИНАЕМ СРАЗУ
-    sendTrackFromPosition(res, nextTrack, 0);
-    activeConnections.add(res);
-    return;
-}
+    // Если воспроизведение ещё не началось — начинаем с первого трека
+    if (audioFilesCache.length > 0) {
+        const firstTrack = audioFilesCache[0];
+        console.log(`🎧 Новый клиент: первый трек "${firstTrack.name}", позиция: 0с`);
+        sendTrackFromPosition(res, firstTrack, 0);
+        activeConnections.add(res);
+        return;
+    }
 
-    // Если ничего не подошло
     res.end();
     return;
 }
