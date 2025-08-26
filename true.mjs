@@ -449,11 +449,13 @@ function startGlobalTrackTimer() {
         console.log(`\n🌐 Сейчас играет: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
         console.log(`📊 В очереди: ${audioFilesCache.length} треков`);
         
+// В ФУНКЦИИ playNextTrack ЗАМЕНИТЕ ОТПРАВКУ ТРЕКА НА ЭТУ
 activeConnections.forEach(res => {
     if (!res.finished) {
-        // ОТПРАВЛЯЕМ ТОЧНО С ТЕКУЩЕЙ ПОЗИЦИИ
         const elapsedMs = trackStartTime > 0 ? Date.now() - trackStartTime : 0;
         const safePosition = Math.min(elapsedMs, track.duration - 100);
+        
+        // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: ВСЕГДА ОТПРАВЛЯЕМ С ТЕКУЩЕЙ ПОЗИЦИИ
         sendTrackFromPosition(res, track, safePosition);
     }
 });
@@ -461,29 +463,42 @@ activeConnections.forEach(res => {
         // Увеличиваем индекс ПОСЛЕ завершения трека
 // В функции playNextTrack замените блок с паузой между треками
 nextTrackTimeout = setTimeout(() => {
-    const wasDownloaded = track.isDownloaded;
-
+    // ОЧИЩАЕМ ТАЙМАУТ И ПРОВЕРЯЕМ АКТУАЛЬНОСТЬ
+    if (nextTrackTimeout) {
+        clearTimeout(nextTrackTimeout);
+        nextTrackTimeout = null;
+    }
+    
+    // ПРОВЕРЯЕМ, ЕСТЬ ЛИ ТРЕКИ В ОЧЕРЕДИ
+    if (audioFilesCache.length === 0) {
+        console.log('⏸️  Очередь пуста, ждем треки...');
+        isPlaying = false;
+        return;
+    }
+    
+    // УДАЛЯЕМ ТЕКУЩИЙ ТРЕК, ЕСЛИ ОН БЫЛ ЗАГРУЖЕН
     if (wasDownloaded) {
         console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
         audioFilesCache.splice(currentTrackIndex, 1);
-
+        
+        // КОРРЕКТИРУЕМ ИНДЕКС, ЕСЛИ ВЫШЛИ ЗА ПРЕДЕЛЫ
         if (currentTrackIndex >= audioFilesCache.length) {
             currentTrackIndex = 0;
         }
     } else {
+        // ПЕРЕХОДИМ К СЛЕДУЮЩЕМУ ТРЕКУ
         currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
     }
-
+    
+    // ПРОВЕРЯЕМ, ОСТАЛИСЬ ЛИ ТРЕКИ
     if (audioFilesCache.length === 0) {
         console.log('⏸️  Очередь пуста после удаления');
         isPlaying = false;
         return;
     }
-
-    // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: УБРАЛИ ПАУЗУ И ДОБАВИЛИ МГНОВЕННЫЙ ПЕРЕХОД
-    console.log('➡️ Мгновенный переход к следующему треку');
-    setImmediate(playNextTrack); // Или setTimeout(playNextTrack, 0)
-
+    
+    // ЗАПУСКАЕМ СЛЕДУЮЩИЙ ТРЕК
+    playNextTrack();
 }, track.duration);
     }
 
@@ -495,6 +510,7 @@ nextTrackTimeout = setTimeout(() => {
 }
 
 // Отправка трека с определенной позиции
+// ЗАМЕНИТЕ ФУНКЦИЮ sendTrackFromPosition НА ЭТУ ВЕРСИЮ
 // ЗАМЕНИТЕ ФУНКЦИЮ sendTrackFromPosition НА ЭТУ ВЕРСИЮ
 function sendTrackFromPosition(res, track, positionMs) {
     // Гарантируем корректную позицию
@@ -511,7 +527,7 @@ function sendTrackFromPosition(res, track, positionMs) {
     const readStream = fs.createReadStream(track.path);
     
     if (positionMs > 0) {
-        // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: ТОЧНЫЙ РАСЧЕТ БАЙТОВ С УЧЕТОМ РЕАЛЬНОГО БИТРЕЙТА
+        // ТОЧНЫЙ РАСЧЕТ БАЙТОВ С УЧЕТОМ РЕАЛЬНОГО БИТРЕЙТА
         const bitrate = 128; // kbps - стандартный битрейт для MP3
         const bytesPerSecond = (bitrate * 1000) / 8; // байт/сек
         const bytesToSkip = Math.floor(positionMs / 1000 * bytesPerSecond);
@@ -537,11 +553,15 @@ function sendTrackFromPosition(res, track, positionMs) {
         readStream.pipe(res, { end: false });
     }
 
+    // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: ГАРАНТИРОВАННАЯ ТИШИНА МЕЖДУ ТРЕКАМИ
     readStream.on('end', () => {
         if (!res.finished) {
-            // Минимальная тишина для плавного перехода (100ms)
-            const silence = Buffer.alloc(1600, 0);
-            res.write(silence);
+            // Отправляем 1 секунду тишины для гарантированного плавного перехода
+            const silence = Buffer.alloc(16000, 0); // 16000 байт = 1 сек при 128kbps
+            res.write(silence, () => {
+                // ВАЖНО: НЕ ЗАКРЫВАЕМ СОЕДИНЕНИЕ
+                // Следующий трек будет отправлен через глобальный таймер
+            });
         }
     });
 
@@ -635,11 +655,11 @@ if (req.url === '/stream.mp3') {
         'Transfer-Encoding': 'chunked'
     });
 
-    // --- КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: ПОДКЛЮЧАЕМ ТОЧНО К ТЕКУЩЕЙ ПОЗИЦИИ ---
+    // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: ПОДКЛЮЧАЕМ ТОЧНО К ТЕКУЩЕЙ ПОЗИЦИИ БЕЗ СМЕЩЕНИЙ
     if (isPlaying && trackStartTime > 0 && currentTrackIndex >= 0 && currentTrackIndex < audioFilesCache.length) {
         const currentTrack = audioFilesCache[currentTrackIndex];
         const elapsedMs = Date.now() - trackStartTime;
-        const safePosition = Math.min(elapsedMs, currentTrack.duration - 1000); // не ближе 1 сек к концу
+        const safePosition = Math.min(elapsedMs, currentTrack.duration - 100); // 100ms вместо 1000
 
         console.log(`🎧 Новый клиент: текущий трек "${currentTrack.name}", позиция: ${Math.round(safePosition / 1000)}с`);
         sendTrackFromPosition(res, currentTrack, safePosition);
