@@ -371,6 +371,7 @@ async function addTrackToQueue(trackName) {
         }
         
         audioFilesCache.splice(insertIndex, 0, newTrack);
+    const trackPosition = insertIndex + 1;
         
         // 🔑 ВОЗВРАЩАЕМ ПОЗИЦИЮ ТРЕКА (начиная с 1)
         
@@ -380,7 +381,6 @@ async function addTrackToQueue(trackName) {
         
      audioFilesCache.splice(insertIndex, 0, newTrack);
     
-    const trackPosition = insertIndex + 1;
     const tracksUntilPlayback = (trackPosition - 1) - currentTrackIndex; // Исправленная формула
     
     return {
@@ -389,11 +389,6 @@ async function addTrackToQueue(trackName) {
         tracksUntilPlayback
     };
         
-        return {
-            success: true,
-            position: trackPosition,
-            tracksUntilPlayback: audioFilesCache.length - trackPosition
-        };
         
     } catch (error) {
         console.error('❌ Ошибка добавления трека:', error);
