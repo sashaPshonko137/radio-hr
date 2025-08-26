@@ -340,7 +340,6 @@ async function addTrackToQueue(trackName) {
         if (audioFilesCache.length === 0) {
             insertIndex = 0;
         } else {
-            // Исправлено: гарантируем, что индекс не выходит за пределы
             insertIndex = currentTrackIndex + 1;
             if (insertIndex > audioFilesCache.length) {
                 insertIndex = audioFilesCache.length;
@@ -385,50 +384,32 @@ getAudioFilesWithDurations().then(files => {
 
 function startGlobalTrackTimer() {
     function playNextTrack() {
-        // Очищаем предыдущий таймаут
         if (nextTrackTimeout) {
             clearTimeout(nextTrackTimeout);
             nextTrackTimeout = null;
         }
         
-        // Проверяем, есть ли треки в очереди
         if (audioFilesCache.length === 0) {
             console.log('⏸️  Очередь пуста, ждем треки...');
             isPlaying = false;
             return;
         }
         
-        // Корректируем индекс, если он вышел за пределы
         if (currentTrackIndex < 0 || currentTrackIndex >= audioFilesCache.length) {
             currentTrackIndex = 0;
         }
         
         const track = audioFilesCache[currentTrackIndex];
         
-        // Дополнительная проверка на случай, если track всё же undefined
         if (!track) {
             console.error('❌ Трек не найден в позиции', currentTrackIndex);
-            // Попробуем найти первый доступный трек
-            for (let i = 0; i < audioFilesCache.length; i++) {
-                if (audioFilesCache[i]) {
-                    currentTrackIndex = i;
-                    break;
-                }
+            currentTrackIndex = 0;
+            if (audioFilesCache.length > 0) {
+                setTimeout(playNextTrack, 1000);
             }
-            // Если не нашли, сбрасываем индекс
-            if (currentTrackIndex >= audioFilesCache.length || !audioFilesCache[currentTrackIndex]) {
-                currentTrackIndex = 0;
-            }
-            
-            // Проверяем еще раз
-            if (!audioFilesCache[currentTrackIndex]) {
-                console.error('❌ Не удалось найти трек после корректировки');
-                isPlaying = false;
-                return;
-            }
+            return;
         }
         
-        // Устанавливаем время начала только если это новый трек
         currentPlaybackPosition = 0;
         trackStartTime = Date.now();
         isPlaying = true;
@@ -436,7 +417,6 @@ function startGlobalTrackTimer() {
         console.log(`\n🌐 Сейчас играет: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
         console.log(`📊 В очереди: ${audioFilesCache.length} треков`);
         
-        // Отправляем текущий трек всем клиентам
         activeConnections.forEach(res => {
             if (!res.finished) {
                 const safePosition = Math.min(currentPlaybackPosition, track.duration - 100);
@@ -444,72 +424,65 @@ function startGlobalTrackTimer() {
             }
         });
 
-        // Очищаем предыдущий интервал
         if (playbackInterval) {
             clearInterval(playbackInterval);
         }
         
-        // Создаем новый интервал для отслеживания позиции
         playbackInterval = setInterval(() => {
             if (isPlaying && trackStartTime > 0) {
                 currentPlaybackPosition = Date.now() - trackStartTime;
             }
         }, 50);
 
-        // Устанавливаем таймаут для следующего трека
         nextTrackTimeout = setTimeout(() => {
-            // Проверяем, есть ли треки в очереди
+            if (nextTrackTimeout) {
+                clearTimeout(nextTrackTimeout);
+                nextTrackTimeout = null;
+            }
+            
             if (audioFilesCache.length === 0) {
                 console.log('⏸️  Очередь пуста, ждем треки...');
                 isPlaying = false;
                 return;
             }
             
-            // Проверяем, что текущий трек все еще существует
-            const currentTrack = audioFilesCache[currentTrackIndex];
-            if (!currentTrack) {
-                console.error('❌ Текущий трек не найден при завершении');
+            const track = audioFilesCache[currentTrackIndex];
+            if (!track) {
+                console.error('❌ Трек не найден при завершении');
                 if (audioFilesCache.length > 0) {
                     playNextTrack();
                 }
                 return;
             }
             
-            // Удаляем временный трек, если он был загружен
-            if (currentTrack.isDownloaded) {
-                console.log(`🗑️  Удаляем временный трек после воспроизведения: ${currentTrack.name}`);
+            if (track.isDownloaded) {
+                console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
                 audioFilesCache.splice(currentTrackIndex, 1);
                 
-                // Корректируем индекс только если очередь не пуста
-                if (audioFilesCache.length > 0) {
-                    if (currentTrackIndex >= audioFilesCache.length) {
-                        currentTrackIndex = 0;
-                    }
-                } else {
-                    isPlaying = false;
+                if (currentTrackIndex >= audioFilesCache.length) {
+                    currentTrackIndex = 0;
                 }
             } else {
-                // Переходим к следующему треку
                 currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
             }
             
-            // Проверяем, остались ли треки
-            if (audioFilesCache.length > 0) {
-                playNextTrack();
-            } else {
+            if (audioFilesCache.length === 0) {
                 console.log('⏸️  Очередь пуста после удаления');
                 isPlaying = false;
+                return;
             }
+            
+            playNextTrack();
         }, track.duration);
     }
 
-    // Сохраняем функцию для доступа извне
     playNextTrackFunction = playNextTrack;
     
     console.log(`\n🚀 Начинаем воспроизведение`);
     playNextTrack();
 }
 
+// ОСНОВНОЕ ИЗМЕНЕНИЕ: УЛУЧШЕННАЯ ОТПРАВКА ТРЕКА С ПОЗИЦИИ
 function sendTrackFromPosition(res, track, positionMs) {
     // Гарантируем корректную позицию
     positionMs = Math.max(0, Math.min(positionMs, track.duration - 100));
@@ -524,42 +497,72 @@ function sendTrackFromPosition(res, track, positionMs) {
 
     const readStream = fs.createReadStream(track.path);
     
-    if (positionMs > 0) {
-        // ТОЧНЫЙ РАСЧЕТ БАЙТОВ С УЧЕТОМ РЕАЛЬНОГО БИТРЕЙТА
+    // ОСНОВНОЕ ИЗМЕНЕНИЕ: УНИВЕРСАЛЬНЫЙ РАСЧЕТ БАЙТОВ
+    let bytesToSkip = 0;
+    
+    // Для MP3 используем расчет через битрейт
+    if (path.extname(track.path).toLowerCase() === '.mp3') {
         const bitrateKbps = track.bitrate / 1000;
-        const bytesPerSecond = (bitrateKbps * 1000) / 8; // байт/сек
-        const bytesToSkip = Math.floor(positionMs / 1000 * bytesPerSecond);
-        
-        let bytesSkipped = 0;
-        
-        readStream.on('data', (chunk) => {
-            if (bytesSkipped < bytesToSkip) {
-                bytesSkipped += chunk.length;
-                if (bytesSkipped >= bytesToSkip) {
-                    const remainingChunk = chunk.slice(bytesToSkip - (bytesSkipped - chunk.length));
-                    if (remainingChunk.length > 0 && !res.finished) {
-                        res.write(remainingChunk);
-                    }
-                }
+        const bytesPerSecond = (bitrateKbps * 1000) / 8;
+        bytesToSkip = Math.floor(positionMs / 1000 * bytesPerSecond);
+    } 
+    // Для других форматов используем более надежный способ
+    else {
+        // Пробуем прочитать заголовок файла, чтобы определить параметры
+        try {
+            const stats = fs.statSync(track.path);
+            const durationMs = track.duration;
+            
+            // Если длительность известна, используем пропорциональный расчет
+            if (durationMs > 0) {
+                bytesToSkip = Math.floor((positionMs / durationMs) * stats.size);
             } else {
-                if (!res.finished) {
-                    res.write(chunk);
+                // Если длительность неизвестна, используем стандартный битрейт
+                const bitrateKbps = track.bitrate / 1000;
+                const bytesPerSecond = (bitrateKbps * 1000) / 8;
+                bytesToSkip = Math.floor(positionMs / 1000 * bytesPerSecond);
+            }
+        } catch (error) {
+            console.error('❌ Ошибка определения размера файла:', error);
+            // Используем стандартный расчет как fallback
+            const bitrateKbps = track.bitrate / 1000;
+            const bytesPerSecond = (bitrateKbps * 1000) / 8;
+            bytesToSkip = Math.floor(positionMs / 1000 * bytesPerSecond);
+        }
+    }
+    
+    let bytesSkipped = 0;
+    
+    readStream.on('data', (chunk) => {
+        if (bytesSkipped < bytesToSkip) {
+            bytesSkipped += chunk.length;
+            if (bytesSkipped >= bytesToSkip) {
+                const remainingChunk = chunk.slice(bytesToSkip - (bytesSkipped - chunk.length));
+                if (remainingChunk.length > 0 && !res.finished) {
+                    res.write(remainingChunk);
                 }
             }
-        });
-    } else {
-        readStream.pipe(res, { end: false });
-    }
-
-    // УНИВЕРСАЛЬНАЯ ТИШИНА ДЛЯ ВСЕХ СЛУЧАЕВ
+        } else {
+            if (!res.finished) {
+                res.write(chunk);
+            }
+        }
+    });
+    
+    // ОСНОВНОЕ ИЗМЕНЕНИЕ: УЛУЧШЕННАЯ ОБРАБОТКА КОНЦА ТРЕКА
     readStream.on('end', () => {
         if (!res.finished) {
-            // Отправляем 1 секунду тишины для плавного перехода
-            const silence = Buffer.alloc(16000, 0);
-            res.write(silence, () => {
-                // ВАЖНО: не закрываем соединение
-                // Следующий трек будет отправлен через глобальный таймер
-            });
+            // Отправляем 1.5 секунды тишины вместо 1 секунды
+            const silence = Buffer.alloc(24000, 0); // 24000 байт = 1.5 сек при 128kbps
+            
+            // Добавляем задержку перед отправкой тишины для новых клиентов
+            if (positionMs > 0) {
+                setTimeout(() => {
+                    res.write(silence);
+                }, 50);
+            } else {
+                res.write(silence);
+            }
         }
     });
 
@@ -572,7 +575,6 @@ function sendTrackFromPosition(res, track, positionMs) {
 }
 
 const server = http.createServer(async (req, res) => {
-    // POST роут для добавления трека
     if (req.url === '/add' && req.method === 'POST') {
         let body = '';
         
@@ -592,7 +594,6 @@ const server = http.createServer(async (req, res) => {
                 
                 console.log(`📨 POST запрос на добавление: "${track}"`);
                 
-                // НЕМЕДЛЕННО отвечаем клиенту
                 res.writeHead(200, { 
                     'Content-Type': 'application/json',
                     'Access-Control-Allow-Origin': '*',
@@ -605,7 +606,6 @@ const server = http.createServer(async (req, res) => {
                     message: 'Трек принят в обработку' 
                 }));
                 
-                // Асинхронно обрабатываем скачивание (после ответа клиенту)
                 setTimeout(async () => {
                     try {
                         const success = await addTrackToQueue(track);
@@ -624,7 +624,6 @@ const server = http.createServer(async (req, res) => {
         return;
     }
     
-    // OPTIONS для CORS
     if (req.url === '/add' && req.method === 'OPTIONS') {
         res.writeHead(200, {
             'Access-Control-Allow-Origin': '*',
@@ -635,7 +634,6 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Обслуживаем аудиопоток
     if (req.url === '/stream.mp3') {
         if (audioFilesCache.length === 0) {
             res.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -652,20 +650,22 @@ const server = http.createServer(async (req, res) => {
             'Transfer-Encoding': 'chunked'
         });
 
-        // Проверяем, есть ли активное воспроизведение
+        // ОСНОВНОЕ ИЗМЕНЕНИЕ: ПОДРОБНАЯ ПРОВЕРКА ТЕКУЩЕГО ТРЕКА
         if (isPlaying && trackStartTime > 0) {
             // Проверяем, что индекс в пределах массива
             if (currentTrackIndex >= 0 && currentTrackIndex < audioFilesCache.length) {
                 const currentTrack = audioFilesCache[currentTrackIndex];
                 
                 // Дополнительная проверка на существование трека
-                if (currentTrack) {
+                if (currentTrack && fs.existsSync(currentTrack.path)) {
                     const safePosition = Math.min(currentPlaybackPosition, currentTrack.duration - 100);
                     
                     console.log(`🎧 Новый клиент: текущий трек "${currentTrack.name}", позиция: ${Math.round(safePosition / 1000)}с`);
                     sendTrackFromPosition(res, currentTrack, safePosition);
                     activeConnections.add(res);
                     return;
+                } else if (currentTrack) {
+                    console.error(`❌ Файл трека не существует: ${currentTrack.path}`);
                 }
             }
         }
@@ -673,17 +673,42 @@ const server = http.createServer(async (req, res) => {
         // Если активного воспроизведения нет или трек не найден, начинаем с первого трека
         if (audioFilesCache.length > 0) {
             const firstTrack = audioFilesCache[0];
-            console.log(`🎧 Новый клиент: первый трек "${firstTrack.name}", позиция: 0с`);
-            sendTrackFromPosition(res, firstTrack, 0);
-            activeConnections.add(res);
-            return;
+            
+            // Проверяем существование файла перед отправкой
+            if (fs.existsSync(firstTrack.path)) {
+                console.log(`🎧 Новый клиент: первый трек "${firstTrack.name}", позиция: 0с`);
+                sendTrackFromPosition(res, firstTrack, 0);
+                activeConnections.add(res);
+                return;
+            } else {
+                console.error(`❌ Файл первого трека не существует: ${firstTrack.path}`);
+            }
         }
 
-        res.end();
-        return;
+        // Если ни один трек не подходит, отправляем пустоту
+        console.log('🔇 Отправляем тишину вместо трека');
+        const silence = Buffer.alloc(16000, 0);
+        
+        // Отправляем тишину с интервалом, чтобы клиент не отключился
+        const silenceInterval = setInterval(() => {
+            if (!res.finished) {
+                res.write(silence);
+            } else {
+                clearInterval(silenceInterval);
+            }
+        }, 1000);
+        
+        // Очищаем интервал при завершении соединения
+        req.on('close', () => {
+            clearInterval(silenceInterval);
+        });
+        
+        res.on('finish', () => {
+            clearInterval(silenceInterval);
+            activeConnections.delete(res);
+        });
     }
 
-    // Главная страница
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`
         <h1>🎧 Highrise Radio</h1>
@@ -714,7 +739,6 @@ const server = http.createServer(async (req, res) => {
 });
 server.maxConnections = 100;
 
-// Запускаем сервер
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`
 🚀 Сервер запущен: http://localhost:${PORT}
