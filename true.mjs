@@ -336,20 +336,28 @@ async function addTrackToQueue(trackName) {
             sourceUrl: videoUrl
         };
         
-        let insertIndex;
-        if (audioFilesCache.length === 0) {
-            insertIndex = 0;
-        } else {
-            insertIndex = currentTrackIndex + 1;
-            if (insertIndex > audioFilesCache.length) {
-                insertIndex = audioFilesCache.length;
+        // 🔑 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: ищем позицию после последнего добавленного трека
+        let insertIndex = 0;
+        for (let i = audioFilesCache.length - 1; i >= 0; i--) {
+            if (audioFilesCache[i].isDownloaded) {
+                insertIndex = i + 1;
+                break;
             }
+        }
+        
+        // Если в очереди нет добавленных треков - ставим в конец
+        if (insertIndex === 0 && audioFilesCache.length > 0) {
+            insertIndex = audioFilesCache.length;
         }
         
         audioFilesCache.splice(insertIndex, 0, newTrack);
         
-        console.log(`✅ Трек добавлен в позицию ${insertIndex + 1}: ${newTrack.name}`);
+        // 🔑 ВОЗВРАЩАЕМ ПОЗИЦИЮ ТРЕКА (начиная с 1)
+        const trackPosition = insertIndex + 1;
+        
+        console.log(`✅ Трек добавлен в позицию ${trackPosition}: ${newTrack.name}`);
         console.log(`🔗 Источник: ${videoUrl}`);
+        console.log(`📊 Трек начнёт воспроизводиться через ${audioFilesCache.length - trackPosition} треков`);
         
         if (audioFilesCache.length === 1 && playNextTrackFunction) {
             console.log('▶️ Немедленный запуск первого трека');
@@ -360,13 +368,18 @@ async function addTrackToQueue(trackName) {
             playNextTrackFunction();
         }
         
-        return true;
+        return {
+            success: true,
+            position: trackPosition,
+            tracksUntilPlayback: audioFilesCache.length - trackPosition
+        };
         
     } catch (error) {
         console.error('❌ Ошибка добавления трека:', error);
-        return false;
+        return { success: false, error: error.message };
     }
 }
+
 
 getAudioFilesWithDurations().then(files => {
     audioFilesCache = files;
@@ -539,7 +552,7 @@ function sendTrackFromPosition(res, track, positionMs) {
     });
 }
 
-const server = http.createServer(async (req, res) => {
+server = http.createServer(async (req, res) => {
     if (req.url === '/add' && req.method === 'POST') {
         let body = '';
         
@@ -573,8 +586,13 @@ const server = http.createServer(async (req, res) => {
                 
                 setTimeout(async () => {
                     try {
-                        const success = await addTrackToQueue(track);
-                        console.log(success ? '✅ Трек добавлен' : '❌ Ошибка добавления');
+                        const result = await addTrackToQueue(track);
+                        if (result.success) {
+                            console.log(`✅ Трек добавлен на позицию ${result.position}`);
+                            console.log(`⏳ Начнёт воспроизводиться через ${result.tracksUntilPlayback} треков`);
+                        } else {
+                            console.error('❌ Ошибка добавления:', result.error);
+                        }
                     } catch (error) {
                         console.error('❌ Ошибка обработки трека:', error);
                     }
@@ -588,6 +606,7 @@ const server = http.createServer(async (req, res) => {
         
         return;
     }
+    
     
     if (req.url === '/add' && req.method === 'OPTIONS') {
         res.writeHead(200, {
