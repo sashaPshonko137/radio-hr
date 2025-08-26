@@ -336,17 +336,11 @@ async function addTrackToQueue(trackName) {
             sourceUrl: videoUrl
         };
         
-        // 🔑 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: ищем позицию после последнего добавленного трека
-        let insertIndex = 0;
-        for (let i = audioFilesCache.length - 1; i >= 0; i--) {
-            if (audioFilesCache[i].isDownloaded) {
-                insertIndex = i + 1;
-                break;
-            }
-        }
+        // 🔑 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: вставляем после текущего трека
+        let insertIndex = currentTrackIndex + 1;
         
-        // Если в очереди нет добавленных треков - ставим в конец
-        if (insertIndex === 0 && audioFilesCache.length > 0) {
+        // Если вставляемый индекс выходит за пределы массива — ставим в конец
+        if (insertIndex > audioFilesCache.length) {
             insertIndex = audioFilesCache.length;
         }
         
