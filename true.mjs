@@ -547,59 +547,77 @@ function sendTrackFromPosition(res, track, positionMs) {
 }
 
 const server = http.createServer(async (req, res) => {
-    if (req.url === '/add' && req.method === 'POST') {
-        let body = '';
-        
-        req.on('data', chunk => {
-            body += chunk.toString();
-        });
-        
-        req.on('end', async () => {
-            try {
-                const { track } = JSON.parse(body);
-                
-                if (!track) {
-                    res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ success: false, message: 'Не указано название трека' }));
-                    return;
-                }
-                
-                console.log(`📨 POST запрос на добавление: "${track}"`);
-                
-                res.writeHead(200, { 
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-                    'Access-Control-Allow-Headers': 'Content-Type'
-                });
-                
+   if (req.url === '/add' && req.method === 'POST') {
+    let body = '';
+    
+    req.on('data', chunk => {
+        body += chunk.toString();
+    });
+    
+    req.on('end', async () => {
+        try {
+            const { track } = JSON.parse(body);
+            
+            if (!track) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ 
-                    success: true, 
-                    message: 'Трек принят в обработку' 
+                    success: false, 
+                    message: 'Не указано название трека' 
                 }));
-                
-                setTimeout(async () => {
-                    try {
-                        const result = await addTrackToQueue(track);
-                        if (result.success) {
-                            console.log(`✅ Трек добавлен на позицию ${result.position}`);
-                            console.log(`⏳ Начнёт воспроизводиться через ${result.tracksUntilPlayback} треков`);
-                        } else {
-                            console.error('❌ Ошибка добавления:', result.error);
-                        }
-                    } catch (error) {
-                        console.error('❌ Ошибка обработки трека:', error);
-                    }
-                }, 100);
-                
-            } catch (error) {
-                res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: false, message: 'Ошибка сервера' }));
+                return;
             }
-        });
-        
-        return;
-    }
+            
+            console.log(`📨 POST запрос на добавление: "${track}"`);
+            
+            try {
+                // 🔑 ЖДЕМ РЕЗУЛЬТАТА ДОБАВЛЕНИЯ ТРЕКА ПЕРЕД ОТПРАВКОЙ ОТВЕТА
+                const result = await addTrackToQueue(track);
+                
+                if (result.success) {
+                    res.writeHead(200, { 
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*',
+                        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                        'Access-Control-Allow-Headers': 'Content-Type'
+                    });
+                    
+                    // 🔑 ВОЗВРАЩАЕМ ПОЗИЦИЮ И КОЛИЧЕСТВО ТРЕКОВ ДО ВОСПРОИЗВЕДЕНИЯ
+                    res.end(JSON.stringify({ 
+                        success: true, 
+                        message: `Трек добавлен на позицию ${result.position}`,
+                        position: result.position,
+                        tracksUntilPlayback: result.tracksUntilPlayback
+                    }));
+                    
+                    console.log(`✅ Трек добавлен на позицию ${result.position}`);
+                    console.log(`⏳ Начнёт воспроизводиться через ${result.tracksUntilPlayback} треков`);
+                } else {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ 
+                        success: false, 
+                        message: result.error || 'Не удалось добавить трек'
+                    }));
+                    console.error('❌ Ошибка добавления:', result.error);
+                }
+            } catch (error) {
+                console.error('❌ Ошибка обработки трека:', error);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ 
+                    success: false, 
+                    message: 'Ошибка сервера при обработке трека'
+                }));
+            }
+        } catch (parseError) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ 
+                success: false, 
+                message: 'Некорректный JSON в запросе' 
+            }));
+        }
+    });
+    
+    return;
+}
     
     
     if (req.url === '/add' && req.method === 'OPTIONS') {
