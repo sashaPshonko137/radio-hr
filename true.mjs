@@ -189,6 +189,7 @@ async function downloadYouTubeTrack(videoUrl, trackName) {
         throw error;
     }
 }
+// ЗАМЕНИТЕ ФУНКЦИЮ scanDirectory НА ЭТУ ВЕРСИЮ
 async function scanDirectory(dir, isCached) {
     try {
         if (!fs.existsSync(dir)) {
@@ -207,7 +208,18 @@ async function scanDirectory(dir, isCached) {
         for (const filePath of files) {
             try {
                 const metadata = await parseFile(filePath);
-                const durationMs = metadata.format.duration ? Math.round(metadata.format.duration * 1000) : 180000;
+                let durationMs;
+                
+                // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: УЛУЧШЕННЫЙ РАСЧЕТ ДЛИТЕЛЬНОСТИ
+                if (metadata.format.duration) {
+                    durationMs = Math.round(metadata.format.duration * 1000);
+                } else {
+                    // Рассчитываем длительность через размер файла и битрейт
+                    const stats = fs.statSync(filePath);
+                    const bitrate = metadata.format.bitrate || 128000; // 128 kbps по умолчанию
+                    durationMs = (stats.size * 8 / bitrate) * 1000;
+                    console.log(`⚠️ Для ${path.basename(filePath)} рассчитана длительность: ${Math.round(durationMs/1000)}с`);
+                }
                 
                 filesWithDurations.push({
                     path: filePath,
@@ -219,13 +231,30 @@ async function scanDirectory(dir, isCached) {
                 
             } catch (error) {
                 console.error(`❌ Ошибка чтения метаданных ${filePath}:`, error);
-                filesWithDurations.push({
-                    path: filePath,
-                    duration: 180000,
-                    name: path.basename(filePath, path.extname(filePath)),
-                    isDownloaded: isCached,
-                    sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
-                });
+                
+                // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: РАСЧЕТ ДЛИТЕЛЬНОСТИ БЕЗ МЕТАДАННЫХ
+                try {
+                    const stats = fs.statSync(filePath);
+                    const durationMs = (stats.size * 8 / 128000) * 1000; // 128 kbps
+                    console.log(`⚠️ Для ${path.basename(filePath)} использована расчетная длительность: ${Math.round(durationMs/1000)}с`);
+                    
+                    filesWithDurations.push({
+                        path: filePath,
+                        duration: durationMs,
+                        name: path.basename(filePath, path.extname(filePath)),
+                        isDownloaded: isCached,
+                        sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
+                    });
+                } catch (statError) {
+                    console.error('❌ Ошибка получения размера файла:', statError);
+                    filesWithDurations.push({
+                        path: filePath,
+                        duration: 180000,
+                        name: path.basename(filePath, path.extname(filePath)),
+                        isDownloaded: isCached,
+                        sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
+                    });
+                }
             }
         }
         
@@ -420,11 +449,14 @@ function startGlobalTrackTimer() {
         console.log(`\n🌐 Сейчас играет: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
         console.log(`📊 В очереди: ${audioFilesCache.length} треков`);
         
-        activeConnections.forEach(res => {
-            if (!res.finished) {
-                sendTrackFromPosition(res, track, 0);
-            }
-        });
+activeConnections.forEach(res => {
+    if (!res.finished) {
+        // ОТПРАВЛЯЕМ ТОЧНО С ТЕКУЩЕЙ ПОЗИЦИИ
+        const elapsedMs = trackStartTime > 0 ? Date.now() - trackStartTime : 0;
+        const safePosition = Math.min(elapsedMs, track.duration - 100);
+        sendTrackFromPosition(res, track, safePosition);
+    }
+});
 
         // Увеличиваем индекс ПОСЛЕ завершения трека
 // В функции playNextTrack замените блок с паузой между треками
@@ -463,11 +495,11 @@ nextTrackTimeout = setTimeout(() => {
 }
 
 // Отправка трека с определенной позиции
+// ЗАМЕНИТЕ ФУНКЦИЮ sendTrackFromPosition НА ЭТУ ВЕРСИЮ
 function sendTrackFromPosition(res, track, positionMs) {
-    if (positionMs >= track.duration) {
-        positionMs = 0;
-    }
-
+    // Гарантируем корректную позицию
+    positionMs = Math.max(0, Math.min(positionMs, track.duration - 100));
+    
     if (!fs.existsSync(track.path)) {
         console.error(`❌ Файл не существует: ${track.path}`);
         if (!res.finished) {
@@ -479,7 +511,11 @@ function sendTrackFromPosition(res, track, positionMs) {
     const readStream = fs.createReadStream(track.path);
     
     if (positionMs > 0) {
-        const bytesToSkip = Math.floor((positionMs / 1000) * 16000);
+        // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: ТОЧНЫЙ РАСЧЕТ БАЙТОВ С УЧЕТОМ РЕАЛЬНОГО БИТРЕЙТА
+        const bitrate = 128; // kbps - стандартный битрейт для MP3
+        const bytesPerSecond = (bitrate * 1000) / 8; // байт/сек
+        const bytesToSkip = Math.floor(positionMs / 1000 * bytesPerSecond);
+        
         let bytesSkipped = 0;
         
         readStream.on('data', (chunk) => {
@@ -501,16 +537,13 @@ function sendTrackFromPosition(res, track, positionMs) {
         readStream.pipe(res, { end: false });
     }
 
-readStream.on('end', () => {
-    if (!res.finished) {
-        // Отправляем ТОЛЬКО 100ms тишины для компенсации задержки перехода
-        const silence = Buffer.alloc(1600, 0); // 1600 байт = 100ms при 128kbps
-        res.write(silence);
-        
-        // ВАЖНО: не закрываем соединение, оставляем его открытым
-        // Клиент продолжит получать данные при начале следующего трека
-    }
-});
+    readStream.on('end', () => {
+        if (!res.finished) {
+            // Минимальная тишина для плавного перехода (100ms)
+            const silence = Buffer.alloc(1600, 0);
+            res.write(silence);
+        }
+    });
 
     readStream.on('error', (err) => {
         console.error('❌ Ошибка отправки трека:', err);
