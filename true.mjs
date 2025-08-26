@@ -2,10 +2,8 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-// В начале файла добавьте
 import os from 'os';
 import { setMaxListeners } from 'events';
-
 import { parseFile } from 'music-metadata';
 import { exec } from 'child_process';
 
@@ -14,10 +12,7 @@ const AUDIO_DIR = path.join(__dirname, 'audio');
 const PORT = 8000;
 const CACHE_DIR = path.join(__dirname, 'cache');
 
-setMaxListeners(50); // или больше, если нужно
-
-// Увеличиваем лимит соединений
-
+setMaxListeners(50);
 
 if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -25,20 +20,17 @@ if (!fs.existsSync(CACHE_DIR)) {
 }
 
 async function getCacheFileName(url) {
-    // Извлекаем videoId из URL
     const videoIdMatch = url.match(/v=([a-zA-Z0-9_-]{11})/);
     
     if (videoIdMatch && videoIdMatch[1]) {
         return `youtube_${videoIdMatch[1]}.mp3`;
     }
     
-    // Если не удалось извлечь ID, используем хеш от URL
     const crypto = await import('crypto');
     const hash = crypto.createHash('md5').update(url).digest('hex');
     return `track_${hash}.mp3`;
 }
 
-// Функция для получения IP-адреса сервера
 function getServerIP() {
     const interfaces = os.networkInterfaces();
     for (const interfaceName of Object.keys(interfaces)) {
@@ -53,11 +45,8 @@ function getServerIP() {
 
 const SERVER_IP = getServerIP();
 
-// Проверяем установлен ли yt-dlp
-// Проверяем установлен ли yt-dlp
 async function checkYtDlp() {
     return new Promise((resolve) => {
-        // Проверяем несколько возможных мест
         const checkCommands = [
             'test -f ~/yt-dlp && echo "home"',
             'which yt-dlp 2>/dev/null && echo "system"',
@@ -71,7 +60,7 @@ async function checkYtDlp() {
                 resolve(true);
             } else {
                 console.log('❌ yt-dlp не найден. Скачайте:');
-                console.log('wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp   -O ~/yt-dlp');
+                console.log('wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O ~/yt-dlp');
                 console.log('chmod +x ~/yt-dlp');
                 resolve(false);
             }
@@ -90,7 +79,6 @@ async function safeDeleteFile(filePath) {
     }
 }
 
-// Проверяем установлен ли ffmpeg
 async function checkFfmpeg() {
     return new Promise((resolve) => {
         exec('which ffmpeg', (error) => {
@@ -105,7 +93,6 @@ async function checkFfmpeg() {
     });
 }
 
-// Поиск трека на YouTube
 async function searchYouTube(trackName) {
     try {
         console.log(`🔍 Ищем трек: "${trackName}"`);
@@ -119,7 +106,6 @@ async function searchYouTube(trackName) {
         
         const html = await response.text();
         
-        // Ищем videoId в HTML
         const regex = /"videoId":"([^"]{11})"/;
         const match = html.match(regex);
         
@@ -139,14 +125,11 @@ async function searchYouTube(trackName) {
     }
 }
 
-// Скачивание через yt-dlp
 async function downloadYouTubeTrack(videoUrl, trackName) {
     try {
-        // Генерируем имя файла на основе URL
         const cacheFileName = await getCacheFileName(videoUrl);
         const cacheFilePath = path.join(CACHE_DIR, cacheFileName);
         
-        // Проверяем, существует ли уже кэшированный файл
         if (fs.existsSync(cacheFilePath)) {
             console.log(`✅ Используем кэшированный трек: ${cacheFilePath}`);
             return cacheFilePath;
@@ -154,11 +137,9 @@ async function downloadYouTubeTrack(videoUrl, trackName) {
         
         console.log(`📥 Скачиваем: ${videoUrl}`);
         
-        // Проверяем где находится yt-dlp
         const ytDlpCommand = fs.existsSync(path.join(os.homedir(), 'yt-dlp')) ? 
             path.join(os.homedir(), 'yt-dlp') : 'yt-dlp';
         
-        // Команда для yt-dlp (сохраняем напрямую в кэш-папку)
         const command = `${ytDlpCommand} -x --audio-format mp3 --audio-quality 0 -o "${cacheFilePath}" "${videoUrl}"`;
         
         console.log(`▶️  Выполняем: ${command}`);
@@ -174,7 +155,6 @@ async function downloadYouTubeTrack(videoUrl, trackName) {
                 
                 console.log('✅ Скачивание завершено');
                 
-                // Проверяем, что файл создан
                 if (fs.existsSync(cacheFilePath)) {
                     console.log(`📁 Файл сохранен в кэш: ${cacheFilePath}`);
                     resolve(cacheFilePath);
@@ -189,7 +169,7 @@ async function downloadYouTubeTrack(videoUrl, trackName) {
         throw error;
     }
 }
-// ЗАМЕНИТЕ ФУНКЦИЮ scanDirectory НА ЭТУ ВЕРСИЮ
+
 async function scanDirectory(dir, isCached) {
     try {
         if (!fs.existsSync(dir)) {
@@ -209,14 +189,12 @@ async function scanDirectory(dir, isCached) {
             try {
                 const metadata = await parseFile(filePath);
                 let durationMs;
+                let bitrate = metadata.format.bitrate || 128000; // 128 kbps по умолчанию
                 
-                // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: УЛУЧШЕННЫЙ РАСЧЕТ ДЛИТЕЛЬНОСТИ
                 if (metadata.format.duration) {
                     durationMs = Math.round(metadata.format.duration * 1000);
                 } else {
-                    // Рассчитываем длительность через размер файла и битрейт
                     const stats = fs.statSync(filePath);
-                    const bitrate = metadata.format.bitrate || 128000; // 128 kbps по умолчанию
                     durationMs = (stats.size * 8 / bitrate) * 1000;
                     console.log(`⚠️ Для ${path.basename(filePath)} рассчитана длительность: ${Math.round(durationMs/1000)}с`);
                 }
@@ -224,6 +202,7 @@ async function scanDirectory(dir, isCached) {
                 filesWithDurations.push({
                     path: filePath,
                     duration: durationMs,
+                    bitrate: bitrate,
                     name: path.basename(filePath, path.extname(filePath)),
                     isDownloaded: isCached,
                     sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
@@ -232,15 +211,16 @@ async function scanDirectory(dir, isCached) {
             } catch (error) {
                 console.error(`❌ Ошибка чтения метаданных ${filePath}:`, error);
                 
-                // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: РАСЧЕТ ДЛИТЕЛЬНОСТИ БЕЗ МЕТАДАННЫХ
                 try {
                     const stats = fs.statSync(filePath);
-                    const durationMs = (stats.size * 8 / 128000) * 1000; // 128 kbps
+                    const bitrate = 128000;
+                    const durationMs = (stats.size * 8 / bitrate) * 1000;
                     console.log(`⚠️ Для ${path.basename(filePath)} использована расчетная длительность: ${Math.round(durationMs/1000)}с`);
                     
                     filesWithDurations.push({
                         path: filePath,
                         duration: durationMs,
+                        bitrate: bitrate,
                         name: path.basename(filePath, path.extname(filePath)),
                         isDownloaded: isCached,
                         sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
@@ -250,6 +230,7 @@ async function scanDirectory(dir, isCached) {
                     filesWithDurations.push({
                         path: filePath,
                         duration: 180000,
+                        bitrate: 128000,
                         name: path.basename(filePath, path.extname(filePath)),
                         isDownloaded: isCached,
                         sourceUrl: isCached ? extractUrlFromCacheName(filePath) : null
@@ -264,10 +245,10 @@ async function scanDirectory(dir, isCached) {
         return [];
     }
 }
+
 function extractUrlFromCacheName(filePath) {
     const fileName = path.basename(filePath);
     
-    // youtube_<videoId>.mp3
     const youtubeMatch = fileName.match(/youtube_([a-zA-Z0-9_-]{11})\.mp3/);
     if (youtubeMatch && youtubeMatch[1]) {
         return `https://www.youtube.com/watch?v=${youtubeMatch[1]}`;
@@ -275,13 +256,10 @@ function extractUrlFromCacheName(filePath) {
     
     return null;
 }
-// Получаем список аудиофайлов с точными длительностями
-// Получаем список аудиофайлов с точными длительностями
+
 async function getAudioFilesWithDurations() {
     try {
-        // Сканируем основную папку с аудио
         const audioFiles = await scanDirectory(AUDIO_DIR, false);
-        
         return audioFiles;
     } catch (err) {
         console.error('Ошибка чтения папок с аудио:', err);
@@ -289,44 +267,39 @@ async function getAudioFilesWithDurations() {
     }
 }
 
-// Глобальное состояние для синхронизации
 let audioFilesCache = [];
-let currentTrackIndex = 0; // Изменено с -1 на 0
-let trackStartTime = 0; // Исправлено: было Date.now(), теперь 0
+let currentTrackIndex = 0;
+let trackStartTime = 0;
 let activeConnections = new Set();
-let nextTrackTimeout = null; // Добавлено для управления таймерами
-let isPlaying = false; // Добавлено для отслеживания состояния воспроизведения
+let nextTrackTimeout = null;
+let isPlaying = false;
+let currentPlaybackPosition = 0;
+let playbackInterval = null;
 
-// Сохраняем функцию для доступа извне
 let playNextTrackFunction = null;
 
 async function addTrackToQueue(trackName) {
     console.log(`🎵 Добавляем в очередь: "${trackName}"`);
     
     try {
-        // Проверяем зависимости
         const hasYtDlp = await checkYtDlp();
         if (!hasYtDlp) {
             throw new Error('yt-dlp не установлен');
         }
 
-        // Ищем трек на YouTube
         const videoUrl = await searchYouTube(trackName);
         if (!videoUrl) {
             console.log('❌ Трек не найден');
             return false;
         }
         
-        // ГЕНЕРИРУЕМ ИМЯ КЭШ-ФАЙЛА ДЛЯ ЭТОГО URL
         const cacheFileName = await getCacheFileName(videoUrl);
         const cacheFilePath = path.join(CACHE_DIR, cacheFileName);
         
-        // ПРОВЕРЯЕМ, НЕ ДОБАВЛЕН ЛИ УЖЕ ЭТОТ URL В ОЧЕРЕДЬ
         const isDuplicateInQueue = audioFilesCache.some(track => 
             track.sourceUrl && track.sourceUrl === videoUrl
         );
         
-        // ПРОВЕРЯЕМ, СУЩЕСТВУЕТ ЛИ УЖЕ ФАЙЛ В КЭШЕ
         const isAlreadyCached = fs.existsSync(cacheFilePath);
         
         if (isDuplicateInQueue) {
@@ -338,18 +311,18 @@ async function addTrackToQueue(trackName) {
             console.log(`✅ Трек уже в кэше: ${cacheFilePath}`);
         }
         
-        // Скачиваем трек (или используем кэш)
         const filePath = await downloadYouTubeTrack(videoUrl, trackName);
         if (!filePath) {
             console.log('❌ Не удалось скачать трек');
             return false;
         }
         
-        // Получаем длительность
         let durationMs = 180000;
+        let bitrate = 128000;
         try {
             const metadata = await parseFile(filePath);
             durationMs = metadata.format.duration ? Math.round(metadata.format.duration * 1000) : 180000;
+            bitrate = metadata.format.bitrate || 128000;
         } catch (error) {
             console.error('❌ Ошибка чтения длительности:', error);
         }
@@ -357,12 +330,12 @@ async function addTrackToQueue(trackName) {
         const newTrack = {
             path: filePath,
             duration: durationMs,
+            bitrate: bitrate,
             name: path.basename(filePath, path.extname(filePath)),
             isDownloaded: true,
             sourceUrl: videoUrl
         };
         
-        // Правильное определение позиции
         let insertIndex;
         if (audioFilesCache.length === 0) {
             insertIndex = 0;
@@ -375,7 +348,6 @@ async function addTrackToQueue(trackName) {
         console.log(`✅ Трек добавлен в позицию ${insertIndex + 1}: ${newTrack.name}`);
         console.log(`🔗 Источник: ${videoUrl}`);
         
-        // Немедленный запуск, если очередь была пустой
         if (audioFilesCache.length === 1 && playNextTrackFunction) {
             console.log('▶️ Немедленный запуск первого трека');
             if (nextTrackTimeout) {
@@ -393,7 +365,6 @@ async function addTrackToQueue(trackName) {
     }
 }
 
-// Предзагружаем информацию о файлах
 getAudioFilesWithDurations().then(files => {
     audioFilesCache = files;
     console.log(`✅ Загружено ${files.length} треков с точными длительностями`);
@@ -408,31 +379,25 @@ getAudioFilesWithDurations().then(files => {
     console.error('❌ Ошибка загрузки треков:', err);
 });
 
-
-// Глобальный таймер для смены треков
 function startGlobalTrackTimer() {
     function playNextTrack() {
-        // Очищаем предыдущий таймаут
         if (nextTrackTimeout) {
             clearTimeout(nextTrackTimeout);
             nextTrackTimeout = null;
         }
         
-        // Проверяем, есть ли треки в очереди
         if (audioFilesCache.length === 0) {
             console.log('⏸️  Очередь пуста, ждем треки...');
             isPlaying = false;
             return;
         }
         
-        // Корректируем индекс, если он вышел за пределы
         if (currentTrackIndex < 0 || currentTrackIndex >= audioFilesCache.length) {
             currentTrackIndex = 0;
         }
         
         const track = audioFilesCache[currentTrackIndex];
         
-        // Дополнительная проверка на случай, если track всё же undefined
         if (!track) {
             console.error('❌ Трек не найден в позиции', currentTrackIndex);
             currentTrackIndex = 0;
@@ -442,79 +407,79 @@ function startGlobalTrackTimer() {
             return;
         }
         
-        // Устанавливаем время начала только если это новый трек
+        currentPlaybackPosition = 0;
         trackStartTime = Date.now();
         isPlaying = true;
         
         console.log(`\n🌐 Сейчас играет: ${track.name} (${Math.round(track.duration / 1000)} сек)`);
         console.log(`📊 В очереди: ${audioFilesCache.length} треков`);
         
-// В ФУНКЦИИ playNextTrack ЗАМЕНИТЕ ОТПРАВКУ ТРЕКА НА ЭТУ
-activeConnections.forEach(res => {
-    if (!res.finished) {
-        const elapsedMs = trackStartTime > 0 ? Date.now() - trackStartTime : 0;
-        const safePosition = Math.min(elapsedMs, track.duration - 100);
-        
-        // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: ВСЕГДА ОТПРАВЛЯЕМ С ТЕКУЩЕЙ ПОЗИЦИИ
-        sendTrackFromPosition(res, track, safePosition);
-    }
-});
+        activeConnections.forEach(res => {
+            if (!res.finished) {
+                const safePosition = Math.min(currentPlaybackPosition, track.duration - 100);
+                sendTrackFromPosition(res, track, safePosition);
+            }
+        });
 
-        // Увеличиваем индекс ПОСЛЕ завершения трека
-// В функции playNextTrack замените блок с паузой между треками
-// В функции startGlobalTrackTimer замените блок:
-nextTrackTimeout = setTimeout(() => {
-    // ОЧИЩАЕМ ТАЙМАУТ И ПРОВЕРЯЕМ АКТУАЛЬНОСТЬ
-    if (nextTrackTimeout) {
-        clearTimeout(nextTrackTimeout);
-        nextTrackTimeout = null;
-    }
-    
-    // ПРОВЕРЯЕМ, ЕСТЬ ЛИ ТРЕКИ В ОЧЕРЕДИ
-    if (audioFilesCache.length === 0) {
-        console.log('⏸️  Очередь пуста, ждем треки...');
-        isPlaying = false;
-        return;
-    }
-    
-    // УДАЛЯЕМ ТЕКУЩИЙ ТРЕК, ЕСЛИ ОН БЫЛ ЗАГРУЖЕН
-    if (track.isDownloaded) { // <- ИСПРАВЛЕНИЕ ЗДЕСЬ
-        console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
-        audioFilesCache.splice(currentTrackIndex, 1);
-        
-        // КОРРЕКТИРУЕМ ИНДЕКС, ЕСЛИ ВЫШЛИ ЗА ПРЕДЕЛЫ
-        if (currentTrackIndex >= audioFilesCache.length) {
-            currentTrackIndex = 0;
+        if (playbackInterval) {
+            clearInterval(playbackInterval);
         }
-    } else {
-        // ПЕРЕХОДИМ К СЛЕДУЮЩЕМУ ТРЕКУ
-        currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-    }
-    
-    // ПРОВЕРЯЕМ, ОСТАЛИСЬ ЛИ ТРЕКИ
-    if (audioFilesCache.length === 0) {
-        console.log('⏸️  Очередь пуста после удаления');
-        isPlaying = false;
-        return;
-    }
-    
-    // ЗАПУСКАЕМ СЛЕДУЮЩИЙ ТРЕК
-    playNextTrack();
-}, track.duration);
+        
+        playbackInterval = setInterval(() => {
+            if (isPlaying && trackStartTime > 0) {
+                currentPlaybackPosition = Date.now() - trackStartTime;
+            }
+        }, 50);
+
+        nextTrackTimeout = setTimeout(() => {
+            if (nextTrackTimeout) {
+                clearTimeout(nextTrackTimeout);
+                nextTrackTimeout = null;
+            }
+            
+            if (audioFilesCache.length === 0) {
+                console.log('⏸️  Очередь пуста, ждем треки...');
+                isPlaying = false;
+                return;
+            }
+            
+            const track = audioFilesCache[currentTrackIndex];
+            if (!track) {
+                console.error('❌ Трек не найден при завершении');
+                if (audioFilesCache.length > 0) {
+                    playNextTrack();
+                }
+                return;
+            }
+            
+            if (track.isDownloaded) {
+                console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
+                audioFilesCache.splice(currentTrackIndex, 1);
+                
+                if (currentTrackIndex >= audioFilesCache.length) {
+                    currentTrackIndex = 0;
+                }
+            } else {
+                currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+            }
+            
+            if (audioFilesCache.length === 0) {
+                console.log('⏸️  Очередь пуста после удаления');
+                isPlaying = false;
+                return;
+            }
+            
+            playNextTrack();
+        }, track.duration);
     }
 
-    // Сохраняем функцию для доступа извне
     playNextTrackFunction = playNextTrack;
     
     console.log(`\n🚀 Начинаем воспроизведение`);
     playNextTrack();
 }
 
-// Отправка трека с определенной позиции
-// ЗАМЕНИТЕ ФУНКЦИЮ sendTrackFromPosition НА ЭТУ ВЕРСИЮ
-// ЗАМЕНИТЕ ФУНКЦИЮ sendTrackFromPosition НА ЭТУ ВЕРСИЮ
 function sendTrackFromPosition(res, track, positionMs) {
-    // Гарантируем корректную позицию
     positionMs = Math.max(0, Math.min(positionMs, track.duration - 100));
     
     if (!fs.existsSync(track.path)) {
@@ -528,9 +493,8 @@ function sendTrackFromPosition(res, track, positionMs) {
     const readStream = fs.createReadStream(track.path);
     
     if (positionMs > 0) {
-        // ТОЧНЫЙ РАСЧЕТ БАЙТОВ С УЧЕТОМ РЕАЛЬНОГО БИТРЕЙТА
-        const bitrate = 128; // kbps - стандартный битрейт для MP3
-        const bytesPerSecond = (bitrate * 1000) / 8; // байт/сек
+        const bitrateKbps = track.bitrate / 1000;
+        const bytesPerSecond = (bitrateKbps * 1000) / 8;
         const bytesToSkip = Math.floor(positionMs / 1000 * bytesPerSecond);
         
         let bytesSkipped = 0;
@@ -554,15 +518,10 @@ function sendTrackFromPosition(res, track, positionMs) {
         readStream.pipe(res, { end: false });
     }
 
-    // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: ГАРАНТИРОВАННАЯ ТИШИНА МЕЖДУ ТРЕКАМИ
     readStream.on('end', () => {
         if (!res.finished) {
-            // Отправляем 1 секунду тишины для гарантированного плавного перехода
-            const silence = Buffer.alloc(16000, 0); // 16000 байт = 1 сек при 128kbps
-            res.write(silence, () => {
-                // ВАЖНО: НЕ ЗАКРЫВАЕМ СОЕДИНЕНИЕ
-                // Следующий трек будет отправлен через глобальный таймер
-            });
+            const silence = Buffer.alloc(16000, 0);
+            res.write(silence);
         }
     });
 
@@ -574,10 +533,7 @@ function sendTrackFromPosition(res, track, positionMs) {
     });
 }
 
-// Создаём сервер
-// Создаём сервер
 const server = http.createServer(async (req, res) => {
-    // POST роут для добавления трека
     if (req.url === '/add' && req.method === 'POST') {
         let body = '';
         
@@ -597,7 +553,6 @@ const server = http.createServer(async (req, res) => {
                 
                 console.log(`📨 POST запрос на добавление: "${track}"`);
                 
-                // НЕМЕДЛЕННО отвечаем клиенту
                 res.writeHead(200, { 
                     'Content-Type': 'application/json',
                     'Access-Control-Allow-Origin': '*',
@@ -610,7 +565,6 @@ const server = http.createServer(async (req, res) => {
                     message: 'Трек принят в обработку' 
                 }));
                 
-                // Асинхронно обрабатываем скачивание (после ответа клиенту)
                 setTimeout(async () => {
                     try {
                         const success = await addTrackToQueue(track);
@@ -628,7 +582,7 @@ const server = http.createServer(async (req, res) => {
         
         return;
     }
-        // OPTIONS для CORS
+    
     if (req.url === '/add' && req.method === 'OPTIONS') {
         res.writeHead(200, {
             'Access-Control-Allow-Origin': '*',
@@ -639,49 +593,44 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-     // Обслуживаем аудиопоток
-if (req.url === '/stream.mp3') {
-    if (audioFilesCache.length === 0) {
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('Нет аудиофайлов');
+    if (req.url === '/stream.mp3') {
+        if (audioFilesCache.length === 0) {
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Нет аудиофайлов');
+            return;
+        }
+
+        console.log(`🎧 Новый клиент подключился (всего: ${activeConnections.size + 1})`);
+
+        res.writeHead(200, {
+            'Content-Type': 'audio/mpeg',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Transfer-Encoding': 'chunked'
+        });
+
+        if (isPlaying && trackStartTime > 0 && currentTrackIndex >= 0 && currentTrackIndex < audioFilesCache.length) {
+            const currentTrack = audioFilesCache[currentTrackIndex];
+            const safePosition = Math.min(currentPlaybackPosition, currentTrack.duration - 100);
+
+            console.log(`🎧 Новый клиент: текущий трек "${currentTrack.name}", позиция: ${Math.round(safePosition / 1000)}с`);
+            sendTrackFromPosition(res, currentTrack, safePosition);
+            activeConnections.add(res);
+            return;
+        }
+
+        if (audioFilesCache.length > 0) {
+            const firstTrack = audioFilesCache[0];
+            console.log(`🎧 Новый клиент: первый трек "${firstTrack.name}", позиция: 0с`);
+            sendTrackFromPosition(res, firstTrack, 0);
+            activeConnections.add(res);
+            return;
+        }
+
+        res.end();
         return;
     }
 
-    console.log(`🎧 Новый клиент подключился (всего: ${activeConnections.size + 1})`);
-
-    res.writeHead(200, {
-        'Content-Type': 'audio/mpeg',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Transfer-Encoding': 'chunked'
-    });
-
-    // КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: ПОДКЛЮЧАЕМ ТОЧНО К ТЕКУЩЕЙ ПОЗИЦИИ БЕЗ СМЕЩЕНИЙ
-    if (isPlaying && trackStartTime > 0 && currentTrackIndex >= 0 && currentTrackIndex < audioFilesCache.length) {
-        const currentTrack = audioFilesCache[currentTrackIndex];
-        const elapsedMs = Date.now() - trackStartTime;
-        const safePosition = Math.min(elapsedMs, currentTrack.duration - 100); // 100ms вместо 1000
-
-        console.log(`🎧 Новый клиент: текущий трек "${currentTrack.name}", позиция: ${Math.round(safePosition / 1000)}с`);
-        sendTrackFromPosition(res, currentTrack, safePosition);
-        activeConnections.add(res);
-        return;
-    }
-
-    // Если воспроизведение ещё не началось — начинаем с первого трека
-    if (audioFilesCache.length > 0) {
-        const firstTrack = audioFilesCache[0];
-        console.log(`🎧 Новый клиент: первый трек "${firstTrack.name}", позиция: 0с`);
-        sendTrackFromPosition(res, firstTrack, 0);
-        activeConnections.add(res);
-        return;
-    }
-
-    res.end();
-    return;
-}
-
-    // Главная страница
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`
         <h1>🎧 Highrise Radio</h1>
@@ -710,9 +659,8 @@ if (req.url === '/stream.mp3') {
         </script>
     `);
 });
-server.maxConnections = 100; // или больше
+server.maxConnections = 100;
 
-// Запускаем сервер
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`
 🚀 Сервер запущен: http://localhost:${PORT}
@@ -729,8 +677,11 @@ sudo apt update && sudo apt install yt-dlp ffmpeg
 
 process.on('SIGINT', () => {
     console.log('\n🛑 Выключаем сервер...');
+    if (playbackInterval) {
+        clearInterval(playbackInterval);
+    }
     activeConnections.forEach(res => {
         if (!res.finished) res.end();
     });
     process.exit(0);
-}); 
+});
