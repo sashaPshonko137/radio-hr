@@ -290,7 +290,10 @@ async function addTrackToQueue(trackName) {
         const videoUrl = await searchYouTube(trackName);
         if (!videoUrl) {
             console.log('❌ Трек не найден');
-            return false;
+            return {
+                success: false,
+                error: 'Трек не найден на YouTube'
+            };
         }
         
         const cacheFileName = await getCacheFileName(videoUrl);
@@ -304,7 +307,10 @@ async function addTrackToQueue(trackName) {
         
         if (isDuplicateInQueue) {
             console.log(`⚠️  Трек с этим URL уже в очереди: ${videoUrl}`);
-            return false;
+            return {
+                success: false,
+                error: 'Этот трек уже в очереди'
+            };
         }
         
         if (isAlreadyCached) {
@@ -314,7 +320,10 @@ async function addTrackToQueue(trackName) {
         const filePath = await downloadYouTubeTrack(videoUrl, trackName);
         if (!filePath) {
             console.log('❌ Не удалось скачать трек');
-            return false;
+            return {
+                success: false,
+                error: 'Не удалось скачать трек'
+            };
         }
         
         let durationMs = 180000;
@@ -336,21 +345,30 @@ async function addTrackToQueue(trackName) {
             sourceUrl: videoUrl
         };
         
-        // 🔑 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: вставляем после текущего трека
-let boundaryIndex = 0;
-for (let i = 0; i < audioFilesCache.length; i++) {
-    if (audioFilesCache[i].isDownloaded) {
-        boundaryIndex = i;
-        break;
-    }
-}
-// Если нет добавленных треков, граница = длине массива
-if (boundaryIndex === 0 && !audioFilesCache[0]?.isDownloaded) {
-    boundaryIndex = audioFilesCache.length;
-}
-
-// ВСТАВЛЯЕМ ПОСЛЕ ГРАНИЦЫ
-let insertIndex = boundaryIndex;
+        // 🔑 НОВАЯ ЛОГИКА ВСТАВКИ ТРЕКА
+        let insertIndex;
+        
+        // Ищем последний добавленный трек ПОСЛЕ текущего воспроизводимого
+        let lastDownloadedIndex = -1;
+        for (let i = currentTrackIndex + 1; i < audioFilesCache.length; i++) {
+            if (audioFilesCache[i].isDownloaded) {
+                lastDownloadedIndex = i;
+            }
+        }
+        
+        // Если есть добавленные треки после текущего - вставляем после последнего из них
+        if (lastDownloadedIndex !== -1) {
+            insertIndex = lastDownloadedIndex + 1;
+        } 
+        // Если нет добавленных треков в очереди после текущего - вставляем сразу после текущего
+        else {
+            insertIndex = currentTrackIndex + 1;
+        }
+        
+        // Корректируем индекс, если выходит за пределы массива
+        if (insertIndex > audioFilesCache.length) {
+            insertIndex = audioFilesCache.length;
+        }
         
         audioFilesCache.splice(insertIndex, 0, newTrack);
         
@@ -378,7 +396,10 @@ let insertIndex = boundaryIndex;
         
     } catch (error) {
         console.error('❌ Ошибка добавления трека:', error);
-        return { success: false, error: error.message };
+        return {
+            success: false,
+            error: error.message || 'Неизвестная ошибка при добавлении трека'
+        };
     }
 }
 
