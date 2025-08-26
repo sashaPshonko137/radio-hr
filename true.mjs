@@ -373,20 +373,21 @@ async function addTrackToQueue(trackName) {
         audioFilesCache.splice(insertIndex, 0, newTrack);
         
         // 🔑 ВОЗВРАЩАЕМ ПОЗИЦИЮ ТРЕКА (начиная с 1)
-        const trackPosition = insertIndex + 1;
         
         console.log(`✅ Трек добавлен в позицию ${trackPosition}: ${newTrack.name}`);
         console.log(`🔗 Источник: ${videoUrl}`);
         console.log(`📊 Трек начнёт воспроизводиться через ${audioFilesCache.length - trackPosition} треков`);
         
-        if (audioFilesCache.length === 1 && playNextTrackFunction) {
-            console.log('▶️ Немедленный запуск первого трека');
-            if (nextTrackTimeout) {
-                clearTimeout(nextTrackTimeout);
-                nextTrackTimeout = null;
-            }
-            playNextTrackFunction();
-        }
+     audioFilesCache.splice(insertIndex, 0, newTrack);
+    
+    const trackPosition = insertIndex + 1;
+    const tracksUntilPlayback = (trackPosition - 1) - currentTrackIndex; // Исправленная формула
+    
+    return {
+        success: true,
+        position: trackPosition,
+        tracksUntilPlayback
+    };
         
         return {
             success: true,
