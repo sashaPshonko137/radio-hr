@@ -552,7 +552,7 @@ function sendTrackFromPosition(res, track, positionMs) {
     });
 }
 
-server = http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) => {
     if (req.url === '/add' && req.method === 'POST') {
         let body = '';
         
