@@ -140,7 +140,7 @@ async function downloadYouTubeTrack(videoUrl, trackName) {
         const ytDlpCommand = fs.existsSync(path.join(os.homedir(), 'yt-dlp')) ? 
             path.join(os.homedir(), 'yt-dlp') : 'yt-dlp';
         
-        const command = `${ytDlpCommand} -x --audio-format mp3 --audio-quality 0 -o "${cacheFilePath}" "${videoUrl}"`;
+        const command = `${ytDlpCommand} -x --audio-format mp3 --audio-quality 0 --postprocessor-args "-b:a 192k -ar 44100" -o "${cacheFilePath}" "${videoUrl}"`;
         
         console.log(`▶️  Выполняем: ${command}`);
         
