@@ -345,50 +345,46 @@ async function addTrackToQueue(trackName) {
             sourceUrl: videoUrl
         };
         
-        // 🔑 НОВАЯ ЛОГИКА ВСТАВКИ ТРЕКА
+        // 🔑 ИСПРАВЛЕННАЯ ЛОГИКА ВСТАВКИ ТРЕКА
         let insertIndex;
         
-        // Ищем последний добавленный трек ПОСЛЕ текущего воспроизводимого
+        // Находим индекс последнего добавленного трека (isDownloaded = true)
         let lastDownloadedIndex = -1;
-        for (let i = currentTrackIndex + 1; i < audioFilesCache.length; i++) {
+        for (let i = audioFilesCache.length - 1; i >= 0; i--) {
             if (audioFilesCache[i].isDownloaded) {
                 lastDownloadedIndex = i;
+                break;
             }
         }
         
-        // Если есть добавленные треки после текущего - вставляем после последнего из них
+        // Если есть добавленные треки, вставляем после последнего из них
         if (lastDownloadedIndex !== -1) {
             insertIndex = lastDownloadedIndex + 1;
         } 
-        // Если нет добавленных треков в очереди после текущего - вставляем сразу после текущего
-        else {
+        // Если нет добавленных треков, но есть локальные файлы, вставляем после текущего
+        else if (currentTrackIndex < audioFilesCache.length - 1) {
             insertIndex = currentTrackIndex + 1;
         }
-        
-        // Корректируем индекс, если выходит за пределы массива
-        if (insertIndex > audioFilesCache.length) {
+        // Если это первый добавляемый трек или конец очереди
+        else {
             insertIndex = audioFilesCache.length;
         }
         
+        // Вставляем трек в найденную позицию
         audioFilesCache.splice(insertIndex, 0, newTrack);
-    const trackPosition = insertIndex + 1;
         
-        // 🔑 ВОЗВРАЩАЕМ ПОЗИЦИЮ ТРЕКА (начиная с 1)
+        const trackPosition = insertIndex + 1;
+        const tracksUntilPlayback = insertIndex - currentTrackIndex;
         
         console.log(`✅ Трек добавлен в позицию ${trackPosition}: ${newTrack.name}`);
         console.log(`🔗 Источник: ${videoUrl}`);
-        console.log(`📊 Трек начнёт воспроизводиться через ${audioFilesCache.length - trackPosition} треков`);
+        console.log(`📊 Трек начнёт воспроизводиться через ${tracksUntilPlayback} треков`);
         
-     audioFilesCache.splice(insertIndex, 0, newTrack);
-    
-    const tracksUntilPlayback = (trackPosition - 1) - currentTrackIndex; // Исправленная формула
-    
-    return {
-        success: true,
-        position: trackPosition,
-        tracksUntilPlayback
-    };
-        
+        return {
+            success: true,
+            position: trackPosition,
+            tracksUntilPlayback: tracksUntilPlayback
+        };
         
     } catch (error) {
         console.error('❌ Ошибка добавления трека:', error);
@@ -398,7 +394,6 @@ async function addTrackToQueue(trackName) {
         };
     }
 }
-
 
 getAudioFilesWithDurations().then(files => {
     audioFilesCache = files;
@@ -487,16 +482,17 @@ function startGlobalTrackTimer() {
                 return;
             }
             
-            if (track.isDownloaded) {
-                console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
-                audioFilesCache.splice(currentTrackIndex, 1);
-                
-                if (currentTrackIndex >= audioFilesCache.length) {
-                    currentTrackIndex = 0;
-                }
-            } else {
-                currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-            }
+if (track.isDownloaded) {
+    console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
+    audioFilesCache.splice(currentTrackIndex, 1);
+} else {
+    currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+}
+
+// Если удалили трек и currentTrackIndex теперь указывает за пределы массива
+if (currentTrackIndex >= audioFilesCache.length) {
+    currentTrackIndex = 0;
+}
             
             if (audioFilesCache.length === 0) {
                 console.log('⏸️  Очередь пуста после удаления');
