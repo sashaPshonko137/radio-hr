@@ -461,47 +461,47 @@ function startGlobalTrackTimer() {
             }
         }, 50);
 
-nextTrackTimeout = setTimeout(() => {
-    if (nextTrackTimeout) {
-        clearTimeout(nextTrackTimeout);
-        nextTrackTimeout = null;
-    }
-    
-    if (audioFilesCache.length === 0) {
-        console.log('⏸️  Очередь пуста, ждем треки...');
-        isPlaying = false;
-        return;
-    }
-    
-    const track = audioFilesCache[currentTrackIndex];
-    if (!track) {
-        console.error('❌ Трек не найден при завершении');
-        if (audioFilesCache.length > 0) {
-            playNextTrack();
-        }
-        return;
-    }
-    
-    if (track.isDownloaded) {
-        console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
-        audioFilesCache.splice(currentTrackIndex, 1);
-    } else {
-        currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
-    }
+        nextTrackTimeout = setTimeout(() => {
+            if (nextTrackTimeout) {
+                clearTimeout(nextTrackTimeout);
+                nextTrackTimeout = null;
+            }
+            
+            if (audioFilesCache.length === 0) {
+                console.log('⏸️  Очередь пуста, ждем треки...');
+                isPlaying = false;
+                return;
+            }
+            
+            const track = audioFilesCache[currentTrackIndex];
+            if (!track) {
+                console.error('❌ Трек не найден при завершении');
+                if (audioFilesCache.length > 0) {
+                    playNextTrack();
+                }
+                return;
+            }
+            
+if (track.isDownloaded) {
+    console.log(`🗑️  Удаляем временный трек после воспроизведения: ${track.name}`);
+    audioFilesCache.splice(currentTrackIndex, 1);
+} else {
+    currentTrackIndex = (currentTrackIndex + 1) % audioFilesCache.length;
+}
 
-    // Если удалили трек и currentTrackIndex теперь указывает за пределы массива
-    if (currentTrackIndex >= audioFilesCache.length) {
-        currentTrackIndex = 0;
-    }
-    
-    if (audioFilesCache.length === 0) {
-        console.log('⏸️  Очередь пуста после удаления');
-        isPlaying = false;
-        return;
-    }
-    
-    playNextTrack();
-}, track.duration);
+// Если удалили трек и currentTrackIndex теперь указывает за пределы массива
+if (currentTrackIndex >= audioFilesCache.length) {
+    currentTrackIndex = 0;
+}
+            
+            if (audioFilesCache.length === 0) {
+                console.log('⏸️  Очередь пуста после удаления');
+                isPlaying = false;
+                return;
+            }
+            
+            playNextTrack();
+        }, track.duration);
     }
 
     playNextTrackFunction = playNextTrack;
@@ -550,10 +550,12 @@ function sendTrackFromPosition(res, track, positionMs) {
         readStream.pipe(res, { end: false });
     }
 
-    // УБРАНА ОТПРАВКА ТИШИНЫ - просто закрываем соединение
+    // ОСНОВНОЕ ИЗМЕНЕНИЕ: ТОЛЬКО 5-СЕКУНДНАЯ ТИШИНА БЕЗ ЗАДЕРЖЕК
     readStream.on('end', () => {
         if (!res.finished) {
-            res.end();
+            // ОТПРАВЛЯЕМ 5 СЕКУНД ТИШИНЫ (80000 БАЙТ)
+            const silence = Buffer.alloc(80000, 0);
+            res.write(silence);
         }
     });
 
